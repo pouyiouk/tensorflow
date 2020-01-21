@@ -253,15 +253,24 @@ void BoostedTreesEnsembleResource::UpdateGrowingMetadata() const {
 }
 
 // Add a tree to the ensemble and returns a new tree_id.
-int32 BoostedTreesEnsembleResource::AddNewTree(const float weight) {
-  return AddNewTreeWithLogits(weight, 0.0);
+int32 BoostedTreesEnsembleResource::AddNewTree(const float weight,
+                                               const int32 logits_dimension) {
+  const std::vector<float> empty_leaf(logits_dimension);
+  return AddNewTreeWithLogits(weight, empty_leaf, logits_dimension);
 }
 
-int32 BoostedTreesEnsembleResource::AddNewTreeWithLogits(const float weight,
-                                                         const float logits) {
+int32 BoostedTreesEnsembleResource::AddNewTreeWithLogits(
+    const float weight, const std::vector<float>& logits,
+    const int32 logits_dimension) {
   const int32 new_tree_id = tree_ensemble_->trees_size();
   auto* node = tree_ensemble_->add_trees()->add_nodes();
-  node->mutable_leaf()->set_scalar(logits);
+  if (logits_dimension == 1) {
+    node->mutable_leaf()->set_scalar(logits[0]);
+  } else {
+    for (int32 i = 0; i < logits_dimension; ++i) {
+      node->mutable_leaf()->mutable_vector()->add_value(logits[i]);
+    }
+  }
   tree_ensemble_->add_tree_weights(weight);
   tree_ensemble_->add_tree_metadata();
 
@@ -276,7 +285,7 @@ void BoostedTreesEnsembleResource::AddBucketizedSplitNode(
   auto* node = AddLeafNodes(tree_id, split_entry, logits_dimension,
                             left_node_id, right_node_id);
   auto* new_split = node->mutable_bucketized_split();
-  new_split->set_feature_id(candidate.feature_idx);
+  new_split->set_feature_id(candidate.feature_id);
   new_split->set_threshold(candidate.threshold);
   new_split->set_dimension_id(candidate.dimension_id);
   new_split->set_left_id(*left_node_id);
@@ -301,7 +310,7 @@ void BoostedTreesEnsembleResource::AddCategoricalSplitNode(
   auto* node = AddLeafNodes(tree_id, split_entry, logits_dimension,
                             left_node_id, right_node_id);
   auto* new_split = node->mutable_categorical_split();
-  new_split->set_feature_id(candidate.feature_idx);
+  new_split->set_feature_id(candidate.feature_id);
   new_split->set_value(candidate.threshold);
   new_split->set_dimension_id(candidate.dimension_id);
   new_split->set_left_id(*left_node_id);

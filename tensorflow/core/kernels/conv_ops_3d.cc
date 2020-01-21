@@ -38,8 +38,8 @@ limitations under the License.
 using stream_executor::dnn::DimIndex;
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #if GOOGLE_CUDA
-#include "tensorflow/stream_executor/cuda/ptxas_utils.h"
-#include "tensorflow/stream_executor/cuda/redzone_allocator.h"
+#include "tensorflow/stream_executor/gpu/asm_compiler.h"
+#include "tensorflow/stream_executor/gpu/redzone_allocator.h"
 #include "tensorflow/stream_executor/tf_allocator_adapter.h"
 #endif  // GOOGLE_CUDA
 
@@ -450,8 +450,8 @@ struct LaunchConvOp<GPUDevice, T> {
 #if GOOGLE_CUDA
       se::TfAllocatorAdapter tf_allocator_adapter(
           ctx->device()->GetAllocator({}), stream);
-      se::cuda::RedzoneAllocator rz_allocator(
-          stream, &tf_allocator_adapter, se::cuda::PtxCompilationOptions());
+      se::RedzoneAllocator rz_allocator(stream, &tf_allocator_adapter,
+                                        se::GpuAsmOpts());
       se::DeviceMemory<T> output_ptr_rz(
           WrapRedzoneBestEffort(&rz_allocator, output_ptr));
       std::vector<AlgorithmDesc> algorithms;
@@ -470,8 +470,8 @@ struct LaunchConvOp<GPUDevice, T> {
         // TODO(zhengxq): profile each algorithm multiple times to better
         // accuracy.
         DnnScratchAllocator scratch_allocator(ConvolveScratchSize, ctx);
-        se::cuda::RedzoneAllocator rz_scratch_allocator(
-            stream, &tf_allocator_adapter, se::cuda::PtxCompilationOptions(),
+        se::RedzoneAllocator rz_scratch_allocator(
+            stream, &tf_allocator_adapter, se::GpuAsmOpts(),
             /*memory_limit=*/ConvolveScratchSize);
         se::ScratchAllocator* allocator_used =
             !RedzoneCheckDisabled()
@@ -504,26 +504,63 @@ struct LaunchConvOp<GPUDevice, T> {
           }
         }
       }
+#elif TENSORFLOW_USE_ROCM
+      std::vector<ProfileResult> algorithms;
+      OP_REQUIRES(ctx,
+                  stream->parent()->GetMIOpenConvolveAlgorithms(
+                      se::dnn::ConvolutionKind::FORWARD, stream,
+                      se::dnn::ToDataType<T>::value, input_desc, filter_desc,
+                      conv_desc, output_desc, &algorithms),
+                  errors::Unknown(
+                      "Failed to get convolution algorithm. This is probably "
+                      "because MIOpen failed to initialize, so try looking to "
+                      "see if a warning log message was printed above."));
+      std::vector<tensorflow::AutotuneResult> results;
+      if (algorithms.size() == 1) {
+        auto profile_result = algorithms[0];
+        results.emplace_back();
+        auto& result = results.back();
+        result.mutable_conv()->set_algorithm(
+            profile_result.algorithm().algo_id());
+        result.mutable_conv()->set_tensor_ops_enabled(
+            profile_result.algorithm().tensor_ops_enabled());
+
+        result.set_scratch_bytes(profile_result.scratch_size());
+        *result.mutable_run_time() = proto_utils::ToDurationProto(
+            absl::Milliseconds(profile_result.elapsed_time_in_ms()));
+      } else {
+        for (auto miopen_algorithm : algorithms) {
+          auto profile_algorithm = miopen_algorithm.algorithm();
+          DnnScratchAllocator scratch_allocator(ConvolveScratchSize, ctx);
+          ProfileResult profile_result;
+          bool miopen_launch_status =
+              stream
+                  ->ThenConvolveWithAlgorithm(
+                      input_desc, input_ptr, filter_desc, filter_ptr, conv_desc,
+                      output_desc, &output_ptr, &scratch_allocator,
+                      AlgorithmConfig(profile_algorithm), &profile_result)
+                  .ok();
+          if (miopen_launch_status) {
+            if (profile_result.is_valid()) {
+              results.emplace_back();
+              auto& result = results.back();
+              result.mutable_conv()->set_algorithm(profile_algorithm.algo_id());
+              result.mutable_conv()->set_tensor_ops_enabled(
+                  profile_algorithm.tensor_ops_enabled());
+              result.set_scratch_bytes(scratch_allocator.TotalByteSize());
+              *result.mutable_run_time() = proto_utils::ToDurationProto(
+                  absl::Milliseconds(profile_result.elapsed_time_in_ms()));
+            }
+          }
+        }
+      }
+#endif
+
       LogConvAutotuneResults(se::dnn::ConvolutionKind::FORWARD,
                              se::dnn::ToDataType<T>::value, input_ptr,
                              filter_ptr, output_ptr, input_desc, filter_desc,
                              output_desc, conv_desc, stream->parent(), results);
       OP_REQUIRES_OK(ctx, BestCudnnConvAlgorithm(results, &algorithm_config));
-#elif TENSORFLOW_USE_ROCM
-      ProfileResult best_result;
-      DnnScratchAllocator scratch_allocator(ConvolveScratchSize, ctx);
-      bool miopen_find_status =
-          stream
-              ->ThenConvolveWithAlgorithm(input_desc, input_ptr, filter_desc,
-                                          filter_ptr, conv_desc, output_desc,
-                                          &output_ptr, &scratch_allocator,
-                                          AlgorithmConfig(), &best_result)
-              .ok();
-      OP_REQUIRES(ctx, miopen_find_status && best_result.is_valid(),
-                  errors::NotFound("Failed to find conv algorithm!"));
-      algorithm_config.set_algorithm(best_result.algorithm());
-      algorithm_config.set_scratch_size(best_result.scratch_size());
-#endif
       AutoTuneConv3d::GetInstance()->Insert(conv_parameters, algorithm_config);
     }
 

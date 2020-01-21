@@ -736,7 +736,8 @@ class _VariableStore(object):
       partition_info = _PartitionInfo(
           full_shape=shape.as_list(), var_offset=var_offset)
       var_full_name = "%s/part_%d" % (name, i)
-      with ops.name_scope(var_full_name + "/PartitionedInitializer"):
+      with ops.name_scope(
+          var_full_name + "/PartitionedInitializer", skip_on_eager=False):
         # Create the tensor to initialize the variable with default value.
         if initializer is None:
           init, initializing_from_value = self._get_default_initializer(
@@ -1281,7 +1282,7 @@ class VariableScope(object):
     full_name = self.name + "/" + name if self.name else name
     # Variable names only depend on variable_scope (full_name here),
     # not name_scope, so we reset it below for the time of variable creation.
-    with ops.name_scope(None):
+    with ops.name_scope(None, skip_on_eager=False):
       # Check that `initializer` dtype and `dtype` are consistent before
       # replacing them with defaults.
       if (dtype is not None and initializer is not None and
@@ -1369,7 +1370,7 @@ class VariableScope(object):
 
     # Variable names only depend on variable_scope (full_name here),
     # not name_scope, so we reset it below for the time of variable creation.
-    with ops.name_scope(None):
+    with ops.name_scope(None, skip_on_eager=False):
       # pylint: disable=protected-access
       return var_store._get_partitioned_variable(
           full_name,
@@ -2090,6 +2091,27 @@ class variable_scope(object):
         assert c.name == "foo/c:0"
   ```
 
+  Keep in mind that the counters for `default_name` are discarded once the
+  parent scope is exited. Therefore when the code re-enters the scope (for
+  instance by saving it), all nested default_name counters will be restarted.
+
+  For instance:
+
+  ```python
+  with tf.compat.v1.variable_scope("foo") as vs:
+    with tf.compat.v1.variable_scope(None, default_name="bar"):
+      v = tf.compat.v1.get_variable("a", [1])
+      assert v.name == "foo/bar/a:0", v.name
+    with tf.compat.v1.variable_scope(None, default_name="bar"):
+      v = tf.compat.v1.get_variable("b", [1])
+      assert v.name == "foo/bar_1/b:0"
+
+  with tf.compat.v1.variable_scope(vs):
+    with tf.compat.v1.variable_scope(None, default_name="bar"):
+      v = tf.compat.v1.get_variable("c", [1])
+      assert v.name == "foo/bar/c:0"   # Uses bar instead of bar_2!
+  ```
+
   Basic example of sharing a variable AUTO_REUSE:
 
   ```python
@@ -2318,10 +2340,10 @@ class variable_scope(object):
       if name_scope:
         # Hack to reenter
         name_scope += "/"
-        current_name_scope = ops.name_scope(name_scope)
+        current_name_scope = ops.name_scope(name_scope, skip_on_eager=False)
       else:
         # Root scope
-        current_name_scope = ops.name_scope(name_scope)
+        current_name_scope = ops.name_scope(name_scope, skip_on_eager=False)
 
     # IMPORTANT: Only assign to self._cached_pure_variable_scope and
     # self._current_name_scope after successful __enter__() calls.
@@ -2335,7 +2357,8 @@ class variable_scope(object):
       else:
         name_scope = self._name_or_scope.name.split("/")[-1]
       if name_scope or current_name_scope:
-        current_name_scope = current_name_scope or ops.name_scope(name_scope)
+        current_name_scope = current_name_scope or ops.name_scope(
+            name_scope, skip_on_eager=False)
         try:
           current_name_scope_name = current_name_scope.__enter__()
         except:
@@ -2391,7 +2414,7 @@ class variable_scope(object):
       if self._reuse:
         raise ValueError("reuse=True cannot be used without a name_or_scope")
       current_name_scope = current_name_scope or ops.name_scope(
-          self._default_name)
+          self._default_name, skip_on_eager=False)
       try:
         current_name_scope_name = current_name_scope.__enter__()
       except:

@@ -20,7 +20,8 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/cpu_backend_context.h"
 
 namespace tflite {
 namespace ops {
@@ -28,8 +29,8 @@ namespace builtin {
 namespace lstm_eval {
 
 // Pamameters for quantized lstm.
-struct QuantizedLstmParameter {
-  QuantizedLstmParameter() : inv_large_value(4) {}
+struct IntegerLstmParameter {
+  IntegerLstmParameter() : inv_large_value(4) {}
   int32_t effective_input_to_input_scale_a;
   int32_t effective_input_to_input_scale_b;
   int32_t effective_recurrent_to_input_scale_a;
@@ -65,8 +66,8 @@ struct QuantizedLstmParameter {
   int32_t layer_norm_output_scale_a;
   int32_t layer_norm_output_scale_b;
   // Quantized clip value for cell and projection. Zero value means no clipping.
-  int32_t quantized_cell_clip;
-  int32_t quantized_proj_clip;
+  int16_t quantized_cell_clip;
+  int8_t quantized_proj_clip;
   int32_t hidden_zp;
   int32_t cell_scale;
   std::vector<int32_t> inv_large_value;
@@ -152,7 +153,7 @@ TfLiteStatus EvalHybrid(
     TfLiteTensor* cell_state_quantized, TfLiteTensor* output_state,
     TfLiteTensor* cell_state, TfLiteTensor* output);
 
-TfLiteStatus EvalQuantized(
+TfLiteStatus EvalInteger(
     const TfLiteTensor* input, const TfLiteTensor* input_to_input_weights,
     const TfLiteTensor* input_to_forget_weights,
     const TfLiteTensor* input_to_cell_weights,
@@ -172,11 +173,11 @@ TfLiteStatus EvalQuantized(
     const TfLiteTensor* cell_bias, const TfLiteTensor* output_gate_bias,
     const TfLiteTensor* projection_weights, const TfLiteTensor* projection_bias,
     const TfLiteLSTMParams* params,
-    const lstm_eval::QuantizedLstmParameter* quantized_lstm_param,
+    const lstm_eval::IntegerLstmParameter* integer_lstm_param,
     TfLiteTensor* activation_state, TfLiteTensor* cell_state,
     TfLiteTensor* output, TfLiteTensor* scratch0, TfLiteTensor* scratch1,
     TfLiteTensor* scratch2, TfLiteTensor* scratch3, TfLiteTensor* scratch4,
-    TfLiteTensor* scratch5);
+    TfLiteTensor* scratch5, CpuBackendContext* context);
 
 }  // namespace lstm_eval
 }  // namespace builtin

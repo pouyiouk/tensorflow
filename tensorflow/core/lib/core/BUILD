@@ -1,15 +1,30 @@
-load("//tensorflow/core/platform:default/build_config.bzl", "tf_proto_library")
+load("//tensorflow/core/platform:build_config.bzl", "tf_proto_library")
+load(
+    "//tensorflow/core/platform:rules_cc.bzl",
+    "cc_library",
+)
 
 package(
     default_visibility = [
-        "//tensorflow:__subpackages__",
+        "//tensorflow/core:__subpackages__",
     ],
     licenses = ["notice"],  # Apache 2.0
 )
 
-# Todo(bmzhao): Remaining targets to add to this BUILD file are:
-# arena, blocking_counter, errors, notification, status, threadpool
-# threadpool_interface, threadpool_options, + all tests.
+# Todo(bmzhao): Remaining targets to add to this BUILD file are all tests.
+
+cc_library(
+    name = "arena",
+    srcs = ["arena.cc"],
+    hdrs = ["arena.h"],
+    deps = [
+        "//tensorflow/core/lib/math:math_util",
+        "//tensorflow/core/platform:logging",
+        "//tensorflow/core/platform:macros",
+        "//tensorflow/core/platform:platform_port",
+        "//tensorflow/core/platform:types",
+    ],
+)
 
 cc_library(
     name = "bitmap",
@@ -18,6 +33,15 @@ cc_library(
     deps = [
         "//tensorflow/core/platform:logging",
         "//tensorflow/core/platform:types",
+    ],
+    alwayslink = 1,
+)
+
+cc_library(
+    name = "blocking_counter",
+    hdrs = ["blocking_counter.h"],
+    deps = [
+        "//tensorflow/core/platform:blocking_counter",
     ],
 )
 
@@ -32,13 +56,25 @@ cc_library(
 
 cc_library(
     name = "coding",
-    srcs = ["coding.cc"],
     hdrs = ["coding.h"],
     deps = [
-        "//tensorflow/core/lib/core:raw_coding",
-        "//tensorflow/core/lib/core:stringpiece",
-        "//tensorflow/core/platform:byte_order",
-        "//tensorflow/core/platform:types",
+        "//tensorflow/core/platform:coding",
+    ],
+)
+
+cc_library(
+    name = "errors",
+    hdrs = ["errors.h"],
+    deps = [
+        "//tensorflow/core/platform:errors",
+    ],
+)
+
+cc_library(
+    name = "notification",
+    hdrs = ["notification.h"],
+    deps = [
+        "//tensorflow/core/platform:notification",
     ],
 )
 
@@ -46,15 +82,22 @@ cc_library(
     name = "raw_coding",
     hdrs = ["raw_coding.h"],
     deps = [
-        "//tensorflow/core/platform:byte_order",
-        "//tensorflow/core/platform:types",
+        "//tensorflow/core/platform:raw_coding",
     ],
 )
 
 cc_library(
     name = "refcount",
     hdrs = ["refcount.h"],
-    deps = ["//tensorflow/core/platform:logging"],
+    deps = ["//tensorflow/core/platform:refcount"],
+)
+
+cc_library(
+    name = "status",
+    hdrs = ["status.h"],
+    deps = [
+        "//tensorflow/core/platform:status",
+    ],
 )
 
 cc_library(
@@ -65,12 +108,69 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "threadpool",
+    hdrs = ["threadpool.h"],
+    deps = [
+        "//tensorflow/core/platform:env",
+    ],
+)
+
+cc_library(
+    name = "threadpool_interface",
+    hdrs = ["threadpool_interface.h"],
+    deps = [
+        "//tensorflow/core/platform:threadpool_interface",
+    ],
+)
+
+cc_library(
+    name = "threadpool_options",
+    hdrs = ["threadpool_options.h"],
+    deps = [
+        "//tensorflow/core/platform:threadpool_options",
+    ],
+)
+
 tf_proto_library(
     name = "error_codes_proto",
     srcs = ["error_codes.proto"],
     cc_api_version = 2,
     make_default_target_header_only = True,
-    provide_cc_alias = True,
+    protodeps = [
+        "//tensorflow/core:error_codes_proto_impl",
+    ],
+    visibility = ["//tensorflow/core:__subpackages__"],
+    exports = ["//tensorflow/core:error_codes_proto_impl"],
+)
+
+# Export source files needed for mobile builds, which do not use granular targets.
+filegroup(
+    name = "mobile_srcs_no_runtime",
+    srcs = [
+        "blocking_counter.h",
+        "coding.h",
+        "errors.h",
+        "refcount.h",
+        "status.h",
+        "stringpiece.h",
+    ],
+    visibility = ["//tensorflow/core:__pkg__"],
+)
+
+filegroup(
+    name = "mobile_srcs_only_runtime",
+    srcs = [
+        "arena.cc",
+        "arena.h",
+        "bitmap.h",
+        "bits.h",
+        "notification.h",
+        "threadpool.h",
+        "threadpool_interface.h",
+        "threadpool_options.h",
+    ],
+    visibility = ["//tensorflow/core:__pkg__"],
 )
 
 filegroup(
@@ -91,18 +191,6 @@ filegroup(
         "threadpool.h",
         "threadpool_interface.h",
         "threadpool_options.h",
-    ],
-    visibility = ["//tensorflow/core:__pkg__"],
-)
-
-filegroup(
-    name = "legacy_lib_core_all_srcs",
-    srcs = [
-        "arena.cc",
-        "bitmap.cc",
-        "coding.cc",
-        "status.cc",
-        "threadpool.cc",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )

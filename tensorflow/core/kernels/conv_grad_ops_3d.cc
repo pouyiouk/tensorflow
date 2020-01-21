@@ -25,6 +25,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/conv_2d.h"
 #include "tensorflow/core/kernels/conv_3d.h"
 #include "tensorflow/core/kernels/conv_grad_ops.h"
+#include "tensorflow/core/kernels/conv_grad_shape_utils.h"
 #include "tensorflow/core/kernels/conv_ops_gpu.h"
 #include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -45,8 +46,8 @@ using stream_executor::dnn::DimIndex;
 #include "tensorflow/core/util/proto/proto_utils.h"
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #if GOOGLE_CUDA
-#include "tensorflow/stream_executor/cuda/ptxas_utils.h"
-#include "tensorflow/stream_executor/cuda/redzone_allocator.h"
+#include "tensorflow/stream_executor/gpu/asm_compiler.h"
+#include "tensorflow/stream_executor/gpu/redzone_allocator.h"
 #include "tensorflow/stream_executor/tf_allocator_adapter.h"
 #endif  // GOOGLE_CUDA
 
@@ -1370,8 +1371,8 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
 #if GOOGLE_CUDA
       se::TfAllocatorAdapter tf_allocator_adapter(
           context->device()->GetAllocator({}), stream);
-      se::cuda::RedzoneAllocator rz_allocator(
-          stream, &tf_allocator_adapter, se::cuda::PtxCompilationOptions());
+      se::RedzoneAllocator rz_allocator(stream, &tf_allocator_adapter,
+                                        se::GpuAsmOpts());
       se::DeviceMemory<T> in_backprop_ptr_rz(
           WrapRedzoneBestEffort(&rz_allocator, in_backprop_ptr));
       std::vector<AlgorithmDesc> algorithms;
@@ -1387,8 +1388,8 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
         // accuracy.
         DnnScratchAllocator scratch_allocator(ConvolveBackwardDataScratchSize,
                                               context);
-        se::cuda::RedzoneAllocator rz_scratch_allocator(
-            stream, &tf_allocator_adapter, se::cuda::PtxCompilationOptions(),
+        se::RedzoneAllocator rz_scratch_allocator(
+            stream, &tf_allocator_adapter, se::GpuAsmOpts(),
             /*memory_limit=*/ConvolveBackwardDataScratchSize);
         se::ScratchAllocator* allocator_used =
             !RedzoneCheckDisabled()
@@ -1432,6 +1433,51 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
           }
         }
       }
+#elif TENSORFLOW_USE_ROCM
+      std::vector<ProfileResult> algorithms;
+      CHECK(stream->parent()->GetMIOpenConvolveAlgorithms(
+          se::dnn::ConvolutionKind::BACKWARD_DATA, stream,
+          se::dnn::ToDataType<T>::value, input_desc, filter_desc, conv_desc,
+          output_desc, &algorithms));
+      ProfileResult best_result;
+      ProfileResult best_result_no_scratch;
+      std::vector<tensorflow::AutotuneResult> results;
+      for (auto miopen_algorithm : algorithms) {
+        auto profile_algorithm = miopen_algorithm.algorithm();
+        DnnScratchAllocator scratch_allocator(ConvolveBackwardDataScratchSize,
+                                              context);
+        ProfileResult profile_result;
+        bool miopen_launch_status =
+            stream
+                ->ThenConvolveBackwardDataWithAlgorithm(
+                    filter_desc, filter_ptr, output_desc, out_backprop_ptr,
+                    conv_desc, input_desc, &in_backprop_ptr, &scratch_allocator,
+                    AlgorithmConfig(profile_algorithm), &profile_result)
+                .ok();
+        if (miopen_launch_status) {
+          if (profile_result.is_valid()) {
+            results.emplace_back();
+            auto& result = results.back();
+            result.mutable_conv()->set_algorithm(profile_algorithm.algo_id());
+            result.mutable_conv()->set_tensor_ops_enabled(
+                profile_algorithm.tensor_ops_enabled());
+            result.set_scratch_bytes(scratch_allocator.TotalByteSize());
+            *result.mutable_run_time() = proto_utils::ToDurationProto(
+                absl::Milliseconds(profile_result.elapsed_time_in_ms()));
+
+            if (profile_result.elapsed_time_in_ms() <
+                best_result.elapsed_time_in_ms()) {
+              best_result = profile_result;
+            }
+            if (scratch_allocator.TotalByteSize() == 0 &&
+                profile_result.elapsed_time_in_ms() <
+                    best_result_no_scratch.elapsed_time_in_ms()) {
+              best_result_no_scratch = profile_result;
+            }
+          }
+        }
+      }
+#endif
       LogConvAutotuneResults(se::dnn::ConvolutionKind::BACKWARD_DATA,
                              se::dnn::ToDataType<T>::value, in_backprop_ptr,
                              filter_ptr, out_backprop_ptr, input_desc,
@@ -1447,22 +1493,6 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
         algorithm_config.set_algorithm_no_scratch(
             best_result_no_scratch.algorithm());
       }
-#elif TENSORFLOW_USE_ROCM
-      DnnScratchAllocator scratch_allocator(ConvolveBackwardDataScratchSize,
-                                            context);
-      ProfileResult best_result;
-      bool miopen_find_status =
-          stream
-              ->ThenConvolveBackwardDataWithAlgorithm(
-                  filter_desc, filter_ptr, output_desc, out_backprop_ptr,
-                  conv_desc, input_desc, &in_backprop_ptr, &scratch_allocator,
-                  AlgorithmConfig(), &best_result)
-              .ok();
-      OP_REQUIRES(context, miopen_find_status && best_result.is_valid(),
-                  errors::NotFound("Failed to find backward data algorithm!"));
-      algorithm_config.set_algorithm(best_result.algorithm());
-      algorithm_config.set_scratch_size(best_result.scratch_size());
-#endif
       AutoTuneConv3dBwdData::GetInstance()->Insert(conv_parameters,
                                                    algorithm_config);
     }
@@ -1863,6 +1893,46 @@ class Conv3DBackpropFilterOp<GPUDevice, T> : public OpKernel {
           }
         }
       }
+#elif TENSORFLOW_USE_ROCM
+      std::vector<ProfileResult> algorithms;
+      CHECK(stream->parent()->GetMIOpenConvolveAlgorithms(
+          se::dnn::ConvolutionKind::BACKWARD_FILTER, stream,
+          se::dnn::ToDataType<T>::value, input_desc, filter_desc, conv_desc,
+          output_desc, &algorithms));
+      ProfileResult best_result;
+      ProfileResult best_result_no_scratch;
+      if (algorithms.size() == 1) {
+        best_result = algorithms[0];
+      } else {
+        for (auto miopen_algorithm : algorithms) {
+          auto profile_algorithm = miopen_algorithm.algorithm();
+          DnnScratchAllocator scratch_allocator(
+              ConvolveBackwardFilterScratchSize, context);
+          ProfileResult profile_result;
+          bool cudnn_launch_status =
+              stream
+                  ->ThenConvolveBackwardFilterWithAlgorithm(
+                      input_desc, input_ptr, output_desc, out_backprop_ptr,
+                      conv_desc, filter_desc, &filter_backprop_ptr,
+                      &scratch_allocator, AlgorithmConfig(profile_algorithm),
+                      &profile_result)
+                  .ok();
+          if (cudnn_launch_status) {
+            if (profile_result.is_valid()) {
+              if (profile_result.elapsed_time_in_ms() <
+                  best_result.elapsed_time_in_ms()) {
+                best_result = profile_result;
+              }
+              if (scratch_allocator.TotalByteSize() == 0 &&
+                  profile_result.elapsed_time_in_ms() <
+                      best_result_no_scratch.elapsed_time_in_ms()) {
+                best_result_no_scratch = profile_result;
+              }
+            }
+          }
+        }
+      }
+#endif
       OP_REQUIRES(context,
                   best_result.is_valid() || best_result_no_scratch.is_valid(),
                   errors::NotFound("No algorithm worked!"));
@@ -1873,23 +1943,6 @@ class Conv3DBackpropFilterOp<GPUDevice, T> : public OpKernel {
         algorithm_config.set_algorithm_no_scratch(
             best_result_no_scratch.algorithm());
       }
-#elif TENSORFLOW_USE_ROCM
-      DnnScratchAllocator scratch_allocator(ConvolveBackwardFilterScratchSize,
-                                            context);
-      ProfileResult best_result;
-      bool miopen_find_status =
-          stream
-              ->ThenConvolveBackwardFilterWithAlgorithm(
-                  input_desc, input_ptr, output_desc, out_backprop_ptr,
-                  conv_desc, filter_desc, &filter_backprop_ptr,
-                  &scratch_allocator, AlgorithmConfig(), &best_result)
-              .ok();
-      OP_REQUIRES(
-          context, miopen_find_status && best_result.is_valid(),
-          errors::NotFound("Failed to find backward filter algorithm!"));
-      algorithm_config.set_algorithm(best_result.algorithm());
-      algorithm_config.set_scratch_size(best_result.scratch_size());
-#endif
       AutoTuneConv3dBwdFilter::GetInstance()->Insert(conv_parameters,
                                                      algorithm_config);
     }

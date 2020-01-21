@@ -35,6 +35,9 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nccl_ops
 
 
+OP_INSTANCE_KEY_START_NUMBER = 100
+
+
 def aggregate_gradients_using_nccl(replica_grads):
   """Aggregate gradients using nccl allreduce."""
   agg_all_g_and_v = []
@@ -253,7 +256,7 @@ class CollectiveKeys(object):
 
   def __init__(self,
                group_key_start=1,
-               op_instance_key_start=100,
+               op_instance_key_start=OP_INSTANCE_KEY_START_NUMBER,
                variable_instance_key_start=1000000):
     """Initializes the object.
 
@@ -318,7 +321,8 @@ def build_collective_reduce(input_tensors,
                             num_workers,
                             collective_keys,
                             reduction_op='Add',
-                            unary_op='Id'):
+                            unary_op='Id',
+                            communication_hint='auto'):
   """Build a subgraph that does one full all-reduce, using the collective Op.
 
   Args:
@@ -330,6 +334,8 @@ def build_collective_reduce(input_tensors,
     collective_keys: a CollectiveKeys object.
     reduction_op: string naming the reduction op.
     unary_op: string naming the unary final op.
+    communication_hint: string providing hint to runtime for choosing collective
+      implementation.
 
   Returns:
     An array of final tensors, one per device, computed by the full reduction.
@@ -354,7 +360,7 @@ def build_collective_reduce(input_tensors,
       with ops.device(devices[d]):
         reduce_op = collective_ops.all_reduce(
             input_tensors[d], group_size, group_key, instance_key, reduction_op,
-            unary_op, subdiv_offsets)
+            unary_op, subdiv_offsets, communication_hint)
         out_tensors.append(reduce_op)
     return out_tensors
 
@@ -719,7 +725,7 @@ def is_indexed_slices(value):
   if isinstance(value, ops.IndexedSlices):
     return True
   assert isinstance(value, value_lib.DistributedValues)
-  return all([isinstance(v, ops.IndexedSlices) for v in value.values])
+  return all(isinstance(v, ops.IndexedSlices) for v in value.values)
 
 
 def split_by_sparsity(values):

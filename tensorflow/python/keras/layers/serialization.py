@@ -39,15 +39,19 @@ from tensorflow.python.keras.layers.merge import *
 from tensorflow.python.keras.layers.noise import *
 from tensorflow.python.keras.layers.normalization import *
 from tensorflow.python.keras.layers.pooling import *
+from tensorflow.python.keras.layers.preprocessing.image_preprocessing import *
+from tensorflow.python.keras.layers.preprocessing.normalization_v1 import *
 from tensorflow.python.keras.layers.recurrent import *
 from tensorflow.python.keras.layers.rnn_cell_wrapper_v2 import *
 from tensorflow.python.keras.layers.wrappers import *
 from tensorflow.python.keras.utils.generic_utils import deserialize_keras_object
+from tensorflow.python.keras.utils.generic_utils import serialize_keras_object
 from tensorflow.python.util.tf_export import keras_export
 
 if tf2.enabled():
   from tensorflow.python.keras.layers.normalization_v2 import *  # pylint: disable=g-import-not-at-top
-  from tensorflow.python.keras.layers.recurrent_v2 import *     # pylint: disable=g-import-not-at-top
+  from tensorflow.python.keras.layers.recurrent_v2 import *  # pylint: disable=g-import-not-at-top
+  from tensorflow.python.keras.layers.preprocessing.normalization import *  # pylint: disable=g-import-not-at-top
 
 # This deserialization table is added for backward compatibility, as in TF 1.13,
 # BatchNormalizationV1 and BatchNormalizationV2 are used as class name for v1
@@ -61,7 +65,7 @@ _DESERIALIZATION_TABLE = {
 
 @keras_export('keras.layers.serialize')
 def serialize(layer):
-  return {'class_name': layer.__class__.__name__, 'config': layer.get_config()}
+  return serialize_keras_object(layer)
 
 
 @keras_export('keras.layers.deserialize')

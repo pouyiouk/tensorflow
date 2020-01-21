@@ -65,16 +65,23 @@ struct DeviceInfo {
   explicit DeviceInfo(cl_device_id id);
 
   bool SupportsTextureArray() const;
+  bool SupportsImageBuffer() const;
+  bool SupportsImage3D() const;
 
   std::vector<std::string> extensions;
   bool supports_fp16;
+  bool supports_image3d_writes;
   Vendor vendor;
   OpenCLVersion cl_version;
   int compute_units_count;
-  int image2d_max_width;
-  int image2d_max_height;
-  int image_buffer_max_size;
-  int image_array_max_layers;
+  uint64_t buffer_max_size;
+  uint64_t image2d_max_width;
+  uint64_t image2d_max_height;
+  uint64_t image_buffer_max_size;
+  uint64_t image_array_max_layers;
+  uint64_t image3d_max_width;
+  uint64_t image3d_max_height;
+  uint64_t image3d_max_depth;
   int3 max_work_group_sizes;
 
   AdrenoInfo adreno_info;
@@ -104,6 +111,8 @@ class CLDevice {
   OpenCLVersion cl_version() const { return info_.cl_version; }
   bool SupportsFP16() const;
   bool SupportsTextureArray() const;
+  bool SupportsImageBuffer() const;
+  bool SupportsImage3D() const;
   bool SupportsExtension(const std::string& extension) const;
   bool IsAdreno() const;
   bool IsAdreno3xx() const;
@@ -136,6 +145,8 @@ T GetDeviceInfo(cl_device_id id, cl_device_info info) {
   }
   return result;
 }
+
+bool FindPlatform(cl_device_id device, cl_platform_id* platform);
 
 }  // namespace cl
 }  // namespace gpu

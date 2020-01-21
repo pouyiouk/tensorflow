@@ -14,6 +14,9 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/profiler/internal/parse_annotation.h"
 
+#include <stack>
+
+#include "absl/strings/ascii.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 
@@ -28,7 +31,7 @@ std::vector<absl::string_view> SplitNameAndMetadata(
     parts.emplace_back(annotation);
   } else {
     annotation.remove_suffix(1);
-    parts = absl::StrSplit(annotation, '#', absl::SkipEmpty());
+    parts = absl::StrSplit(annotation, '#');
     if (parts.size() > 2) {
       parts.resize(2);
     }
@@ -39,13 +42,71 @@ std::vector<absl::string_view> SplitNameAndMetadata(
   return parts;
 }
 
+// Use comma as separate to split input metadata. However, treat comma inside
+// ""/''/[]/{}/() pairs as normal characters.
+std::vector<absl::string_view> SplitPairs(absl::string_view metadata) {
+  std::vector<absl::string_view> key_value_pairs;
+  std::stack<char> quotes;
+  int start = 0, end = 0;
+  for (; end < metadata.size(); ++end) {
+    char ch = metadata[end];
+    switch (ch) {
+      case '\"':
+      case '\'':
+        if (quotes.empty() || quotes.top() != ch) {
+          quotes.push(ch);
+        } else {
+          quotes.pop();
+        }
+        break;
+      case '{':
+      case '(':
+      case '[':
+        quotes.push(ch);
+        break;
+      case '}':
+        if (!quotes.empty() && quotes.top() == '{') {
+          quotes.pop();
+        }
+        break;
+      case ')':
+        if (!quotes.empty() && quotes.top() == '(') {
+          quotes.pop();
+        }
+        break;
+      case ']':
+        if (!quotes.empty() && quotes.top() == '[') {
+          quotes.pop();
+        }
+        break;
+      case ',':
+        if (quotes.empty()) {
+          if (end - start > 1) {
+            key_value_pairs.emplace_back(metadata.data() + start, end - start);
+          }
+          start = end + 1;  // Skip the current ','.
+        }
+        break;
+    }
+  }
+  if (end - start > 1) {
+    key_value_pairs.emplace_back(metadata.data() + start, end - start);
+  }
+  return key_value_pairs;
+}
+
 std::vector<std::pair<absl::string_view, absl::string_view>> ParseMetadata(
     absl::string_view metadata) {
   std::vector<std::pair<absl::string_view, absl::string_view>> key_values;
-  for (absl::string_view pair : absl::StrSplit(metadata, ',')) {
-    std::vector<absl::string_view> parts = absl::StrSplit(pair, '=');
-    if (parts.size() == 2 && !parts[0].empty() && !parts[1].empty()) {
-      key_values.push_back(std::make_pair(parts[0], parts[1]));
+  for (absl::string_view pair : SplitPairs(metadata)) {
+    std::vector<absl::string_view> parts =
+        absl::StrSplit(pair, absl::MaxSplits('=', 1));
+    if (parts.size() == 2) {
+      absl::string_view key = absl::StripAsciiWhitespace(parts[0]);
+      absl::string_view value = absl::StripAsciiWhitespace(parts[1]);
+      if (!key.empty() && !value.empty()) {
+        key_values.push_back({key, value});
+      }
     }
   }
   return key_values;
@@ -57,7 +118,7 @@ Annotation ParseAnnotation(absl::string_view annotation) {
   Annotation result;
   std::vector<absl::string_view> parts = SplitNameAndMetadata(annotation);
   if (!parts.empty()) {
-    result.name = parts[0];
+    result.name = absl::StripAsciiWhitespace(parts[0]);
     for (const auto& key_value : ParseMetadata(parts[1])) {
       result.metadata.push_back({key_value.first, key_value.second});
     }
