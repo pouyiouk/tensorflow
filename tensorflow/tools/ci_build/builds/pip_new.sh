@@ -431,7 +431,7 @@ install_tensorflow_pip() {
   fi
 
   # Set path to pip.
-  PIP_BIN_PATH="$(which pip${PY_MAJOR_MINOR_VER})"
+  PIP_BIN_PATH="${PYTHON_BIN_PATH} -m pip"
 
   # Print python and pip bin paths
   echo "PYTHON_BIN_PATH to be used to install the .whl: ${PYTHON_BIN_PATH}"
@@ -477,7 +477,7 @@ install_tensorflow_pip() {
 
   # Install the gast package in the virtualenv. Installing it in user system
   # packages does not appear to port it over when creating a virtualenv.
-  ${PIP_BIN_PATH} install --upgrade "gast==0.3.2" || \
+  ${PIP_BIN_PATH} install --upgrade "gast==0.3.3" || \
     die "Error: gast install, upgrade FAILED"
 
 }

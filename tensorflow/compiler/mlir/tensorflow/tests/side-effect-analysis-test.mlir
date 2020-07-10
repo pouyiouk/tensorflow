@@ -1,4 +1,4 @@
-// RUN: tf-opt -split-input-file -tf-test-side-effect-analysis -verify-diagnostics %s | FileCheck %s --dump-input=fail
+// RUN: tf-opt -split-input-file -tf-test-side-effect-analysis -verify-diagnostics %s | FileCheck %s
 
 // Tests that the pass tracks control dependencies for reads/writes on the same
 // resource.
@@ -243,7 +243,7 @@ func @with_replicate(
           [%arg0, %arg1] as %r0: tensor<*x!tf.resource<tensor<32xf32>>>,
           [%arg2, %arg3] as %r1: tensor<*x!tf.resource<tensor<32xf32>>>,
           [%u0#0, %u0#1] as %u : tensor<32xf32>)
-          {n = 2 : i32, devices = ["/CPU:0", "/GPU:1"]} {
+          {n = 2 : i32, devices = {CORE_0 = ["/CPU:0", "/GPU:1"]}} {
         %read0 = "tf.ReadVariableOp"(%r0) : (tensor<*x!tf.resource<tensor<32xf32>>>) -> tensor<32xf32>
         // expected-remark@above {{ID: 1}}
         // expected-remark@above {{Successors: {4}}}
@@ -786,9 +786,9 @@ func @tf_registry_ops(
 // CHECK-LABEL: func @arguments_with_unique_ids
 func @arguments_with_unique_ids(
   // expected-remark@above {{ID: 9}}
-  %arg0: tensor<*x!tf.resource<tensor<32xf32>>> {tf.resource_arg_unique_id = 0 : i64},
-  %arg1: tensor<*x!tf.resource<tensor<32xf32>>> {tf.resource_arg_unique_id = 0 : i64},
-  %arg2: tensor<*x!tf.resource<tensor<32xf32>>> {tf.resource_arg_unique_id = 33 : i64}) {
+  %arg0: tensor<*x!tf.resource<tensor<32xf32>>> {tf._resource_arg_unique_id = 0 : i64},
+  %arg1: tensor<*x!tf.resource<tensor<32xf32>>> {tf._resource_arg_unique_id = 0 : i64},
+  %arg2: tensor<*x!tf.resource<tensor<32xf32>>> {tf._resource_arg_unique_id = 33 : i64}) {
   tf_executor.graph {
   // expected-remark@above {{ID: 7}}
   // expected-remark@above {{Successors: {8}}}

@@ -110,6 +110,8 @@ message TfliteInferenceParams {
     NONE = 0;
     NNAPI = 1;
     GPU = 2;
+    HEXAGON = 3;
+    XNNPACK = 4;
   }
   optional Delegate delegate = 2;
   // Number of threads available to the TFLite Interpreter.

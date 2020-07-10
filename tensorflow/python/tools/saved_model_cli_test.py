@@ -605,7 +605,7 @@ Defined Functions:
         'regress_x_to_y', '--input_examples', 'inputs={"x":8.0,"x2":5.0}',
         '--outdir', output_dir
     ])
-    with self.assertRaisesRegexp(ValueError, 'must be a list'):
+    with self.assertRaisesRegex(ValueError, 'must be a list'):
       saved_model_cli.run(args)
 
   def testRunCommandInputExamplesFeatureValueNotListError(self):
@@ -617,7 +617,7 @@ Defined Functions:
         'regress_x_to_y', '--input_examples', 'inputs=[{"x":8.0,"x2":5.0}]',
         '--outdir', output_dir
     ])
-    with self.assertRaisesRegexp(ValueError, 'feature value must be a list'):
+    with self.assertRaisesRegex(ValueError, 'feature value must be a list'):
       saved_model_cli.run(args)
 
   def testRunCommandInputExamplesFeatureBadType(self):
@@ -629,7 +629,7 @@ Defined Functions:
         'regress_x_to_y', '--input_examples', 'inputs=[{"x":[[1],[2]]}]',
         '--outdir', output_dir
     ])
-    with self.assertRaisesRegexp(ValueError, 'is not supported'):
+    with self.assertRaisesRegex(ValueError, 'is not supported'):
       saved_model_cli.run(args)
 
   def testRunCommandOutputFileExistError(self):
@@ -725,7 +725,7 @@ Defined Functions:
          '--output_prefix', output_dir,
          '--cpp_class', 'Compiled',
          '--signature_def_key', 'MISSING'])
-    with self.assertRaisesRegexp(ValueError, 'Unable to find signature_def'):
+    with self.assertRaisesRegex(ValueError, 'Unable to find signature_def'):
       saved_model_cli.aot_compile_cpu(args)
 
   class AOTCompileDummyModel(tracking.AutoTrackable):
@@ -733,37 +733,65 @@ Defined Functions:
 
     def __init__(self):
       self.var = variables.Variable(1.0, name='my_var')
+      self.write_var = variables.Variable(1.0, name='write_var')
 
     @def_function.function(input_signature=[
         tensor_spec.TensorSpec(shape=(2, 2), dtype=dtypes.float32),
+        # Test unused inputs.
         tensor_spec.TensorSpec(shape=(), dtype=dtypes.float32),
     ])
     def func2(self, x, y):
+      del y
       return {'res': x + self.var}
 
-  @parameterized.named_parameters(('VariablesToFeedNone', ''),
-                                  ('VariablesToFeedAll', 'all'),
-                                  ('VariablesToFeedMyVar', 'my_var'))
-  def testAOTCompileCPUFreezesAndCompiles(self, variables_to_feed):
+    @def_function.function(input_signature=[
+        # Test large inputs.
+        tensor_spec.TensorSpec(shape=(2048, 16), dtype=dtypes.float32),
+        tensor_spec.TensorSpec(shape=(), dtype=dtypes.float32),
+    ])
+    def func3(self, x, y):
+      del y
+      return {'res': x + self.var}
+
+    @def_function.function(input_signature=[
+        tensor_spec.TensorSpec(shape=(), dtype=dtypes.float32),
+        tensor_spec.TensorSpec(shape=(), dtype=dtypes.float32),
+    ])
+    def func_write(self, x, y):
+      del y
+      self.write_var.assign(x + self.var)
+      return {'res': self.write_var}
+
+  @parameterized.named_parameters(
+      ('VariablesToFeedNone', '', 'func2'),
+      ('VariablesToFeedAll', 'all', 'func2'),
+      ('VariablesToFeedMyVar', 'my_var', 'func2'),
+      ('VariablesToFeedNoneLargeConstant', '', 'func3'),
+      ('WriteToWriteVar', 'all', 'func_write'),
+  )
+  def testAOTCompileCPUFreezesAndCompiles(self, variables_to_feed, func):
     if not test.is_built_with_xla():
       self.skipTest('Skipping test because XLA is not compiled in.')
 
     saved_model_dir = os.path.join(test.get_temp_dir(), 'dummy_model')
     dummy_model = self.AOTCompileDummyModel()
+    func = getattr(dummy_model, func)
     with self.cached_session():
       self.evaluate(dummy_model.var.initializer)
-      save.save(dummy_model, saved_model_dir)
+      self.evaluate(dummy_model.write_var.initializer)
+      save.save(dummy_model, saved_model_dir, signatures={'func': func})
 
     self.parser = saved_model_cli.create_parser()
     output_prefix = os.path.join(test.get_temp_dir(), 'aot_compile_cpu_dir/out')
     args = self.parser.parse_args([
         'aot_compile_cpu', '--dir', saved_model_dir, '--tag_set', 'serve',
+        '--signature_def_key', 'func',
         '--output_prefix', output_prefix, '--variables_to_feed',
         variables_to_feed, '--cpp_class', 'Generated'
     ])  # Use the default seving signature_key.
     with test.mock.patch.object(logging, 'warn') as captured_warn:
       saved_model_cli.aot_compile_cpu(args)
-    self.assertRegexpMatches(
+    self.assertRegex(
         str(captured_warn.call_args),
         'Signature input key \'y\'.*has been pruned while freezing the graph.')
     self.assertTrue(file_io.file_exists('{}.o'.format(output_prefix)))
@@ -778,7 +806,15 @@ Defined Functions:
     # arg_y got filtered out as it's not used by the output.
     self.assertNotIn('arg_feed_y_data', header_contents)
     if variables_to_feed:
-      self.assertIn('var_param_my_var', header_contents)
+      # Read-only-variables' setters preserve constness.
+      self.assertIn('set_var_param_my_var_data(const float', header_contents)
+      self.assertNotIn('set_var_param_my_var_data(float', header_contents)
+    if func == dummy_model.func_write:
+      # Writeable variables setters do not preserve constness.
+      self.assertIn('set_var_param_write_var_data(float', header_contents)
+      self.assertNotIn(
+          'set_var_param_write_var_data(const float', header_contents)
+
     makefile_contents = file_io.read_file_to_string(
         '{}_makefile.inc'.format(output_prefix))
     self.assertIn('-D_GLIBCXX_USE_CXX11_ABI=', makefile_contents)
