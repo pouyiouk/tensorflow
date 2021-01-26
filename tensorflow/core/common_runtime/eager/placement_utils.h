@@ -35,15 +35,15 @@ bool IsCustomDevice(StringPiece device_name, const EagerContext& ctx);
 // Pin the op to cpu if all op inputs are on the CPU, small (<64 elements) and
 // integers (int32/int64). This can be disabled by setting the environment
 // variable "TF_EAGER_ENABLE_SMALL_TENSOR_CPU_PINNING" to "0" or "false".
-Status MaybePinSmallOpsToCpu(bool* result, StringPiece op_name,
-                             absl::Span<ImmediateExecutionTensorHandle*> args,
-                             const EagerContext& ctx);
+Status MaybePinSmallOpsToCpu(
+    bool* result, StringPiece op_name,
+    absl::Span<ImmediateExecutionTensorHandle* const> args,
+    StringPiece cpu_device_name);
 
 // If a resource touching input is specified, all resource-touching ops run in
 // the device the resource is, regardless of anything else that has been
 // specified. This is identical to the graph mode behavior.
-Status MaybePinToResourceDevice(VariantDevice* device,
-                                const EagerOperation& op);
+Status MaybePinToResourceDevice(Device** device, const EagerOperation& op);
 
 // If all the inputs are on the same custom device, use that custom
 // device. Otherwise, it is an error to have a custom device as an input.

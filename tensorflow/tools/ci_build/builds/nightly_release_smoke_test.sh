@@ -19,21 +19,21 @@ set -e
 set -x
 
 # CPU size
-MAC_CPU_MAX_WHL_SIZE=160M
-LINUX_CPU_MAX_WHL_SIZE=133M
+MAC_CPU_MAX_WHL_SIZE=175M
+LINUX_CPU_MAX_WHL_SIZE=152M
 WIN_CPU_MAX_WHL_SIZE=113M
 # GPU size
-LINUX_GPU_MAX_WHL_SIZE=337M
+LINUX_GPU_MAX_WHL_SIZE=390M
 WIN_GPU_MAX_WHL_SIZE=252M
 
 function run_smoke_test() {
   VENV_TMP_DIR=$(mktemp -d)
 
   ${PYTHON_BIN_PATH} -m virtualenv -p ${PYTHON_BIN_PATH} "${VENV_TMP_DIR}" || \
-      die "FAILED: Unable to create virtualenv"
+      echo "WARNING: Unable to create virtualenv. Assuming we are in one already."
 
   source "${VENV_TMP_DIR}/bin/activate" || \
-      die "FAILED: Unable to activate virtualenv "
+      echo "WARNING: Unable to activate virtualenv. Assuming we are in one already."
 
   # install tensorflow
   python -m pip install ${WHL_NAME} || \

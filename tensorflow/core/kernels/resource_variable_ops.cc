@@ -245,7 +245,8 @@ void VarHandleOp::Compute(OpKernelContext* ctx) {
         ctx, ctx->allocate_temp(DT_RESOURCE, TensorShape({}), &handle, attr));
     handle.scalar<ResourceHandle>()() = MakeResourceHandle<Var>(
         ctx, container_, name_,
-        std::vector<DtypeAndPartialTensorShape>{dtype_and_shape_});
+        std::vector<DtypeAndPartialTensorShape>{dtype_and_shape_},
+        ctx->stack_trace());
     ctx->set_output(0, handle);
   } else {
     ctx->set_output(0, resource_);
@@ -998,8 +999,8 @@ REGISTER_SCATTER_KERNEL(Variant, CPU, "ResourceScatterUpdate",
 
 #define REGISTER_SCATTER_UPDATE_GPU(type) REGISTER_SCATTER_UPDATE(type, GPU);
 
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SCATTER_ARITHMETIC_GPU);
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SCATTER_MINMAX_GPU);
+TF_CALL_GPU_NUMBER_TYPES(REGISTER_SCATTER_ARITHMETIC_GPU);
+TF_CALL_GPU_NUMBER_TYPES(REGISTER_SCATTER_MINMAX_GPU);
 
 REGISTER_KERNEL_BUILDER(Name("ResourceScatterUpdate")
                             .Device(DEVICE_GPU)

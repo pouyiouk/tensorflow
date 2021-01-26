@@ -183,7 +183,7 @@ class Exhaustive32BitOrLessUnaryTest
     return end - begin;
   }
 
-  // Generates all the input values for the test. The the range of the bit
+  // Generates all the input values for the test. The range of the bit
   // representation of the input values is described by the test parameter as
   // a pair of int64 representing the starting bit pattern and the ending
   // pattern. Each bit representation is first truncated to the integral type of
@@ -475,6 +475,11 @@ void Exhaustive32BitOrLessUnaryTest<T>::SetParamsForSinCosTan() {
   } else if (T == BF16) {
     this->known_incorrect_fn_ = [](int64 v) {
       float f = static_cast<float>(BitCast<bfloat16>(static_cast<uint16>(v)));
+      return std::abs(f) > (1 << 13);
+    };
+  } else if (T == F16) {
+    this->known_incorrect_fn_ = [](int64 v) {
+      float f = static_cast<float>(BitCast<half>(static_cast<uint16>(v)));
       return std::abs(f) > (1 << 13);
     };
   }

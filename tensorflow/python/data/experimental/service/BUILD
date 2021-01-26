@@ -18,7 +18,6 @@ tf_python_pybind_extension(
         "//tensorflow/python:pybind11_lib",
         "//tensorflow/python:pybind11_status",
         "//third_party/python_runtime:headers",
-        "@com_github_grpc_grpc//:grpc++_public_hdrs",
         "@pybind11",
     ],
 )
@@ -26,6 +25,7 @@ tf_python_pybind_extension(
 py_library(
     name = "server_lib",
     srcs = ["server_lib.py"],
+    srcs_version = "PY3",
     visibility = [
         "//visibility:public",
     ],
@@ -39,14 +39,17 @@ tf_py_test(
     srcs = ["server_lib_test.py"],
     deps = [
         ":server_lib",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python:errors",
         "//tensorflow/python:platform_test",
+        "//tensorflow/python/profiler:profiler_client",
     ],
 )
 
 py_library(
     name = "service",
     srcs = ["__init__.py"],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         ":server_lib",
         "//tensorflow/python/data/experimental/ops:data_service_ops",

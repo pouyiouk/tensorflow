@@ -18,17 +18,20 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import os
 import numpy as np
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.keras import backend as K
+from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import string_ops
 from tensorflow.python.ops.ragged import ragged_functional_ops
 from tensorflow.python.ops.ragged import ragged_tensor
+from tensorflow.python.ops.ragged import ragged_tensor_value
 from tensorflow.python.platform import gfile
 
 
@@ -61,8 +64,10 @@ class TableHandler(object):
       raise RuntimeError("Size mismatch between values and key arrays. "
                          "Keys had size %s, values had size %s." %
                          (len(keys), len(values)))
-    keys = ops.convert_to_tensor(keys, dtype=self.table._key_dtype)  # pylint: disable=protected-access
-    values = ops.convert_to_tensor(values, dtype=self.table._value_dtype)  # pylint: disable=protected-access
+    keys = ops.convert_to_tensor_v2_with_dispatch(
+        keys, dtype=self.table._key_dtype)  # pylint: disable=protected-access
+    values = ops.convert_to_tensor_v2_with_dispatch(
+        values, dtype=self.table._value_dtype)  # pylint: disable=protected-access
     if values.shape.ndims != 1:
       raise ValueError("`values` must be 1-dimensional, got an input with "
                        " %s dimensions." % values.shape.ndims)
@@ -127,14 +132,18 @@ class TableHandler(object):
         inputs, (sparse_tensor.SparseTensor, sparse_tensor.SparseTensorValue)):
       return self._sparse_lookup(inputs)
 
-    # Try to convert lists/arrays to tensors or RaggedTensors.
-    inputs = ragged_tensor.convert_to_tensor_or_ragged_tensor(inputs)
-
-    # Run the lookup operation on the converted tensor.
-    if ragged_tensor.is_ragged(inputs):
+    if tf_utils.is_ragged(inputs):
+      if isinstance(inputs, ragged_tensor_value.RaggedTensorValue):
+        flat_values = ops.convert_to_tensor_v2_with_dispatch(
+            value=inputs.flat_values,
+            name="flat_values")
+        inputs = ragged_tensor.RaggedTensor.from_nested_row_splits(
+            flat_values, inputs.nested_row_splits, validate=False)
       return self._ragged_lookup(inputs)
-    else:
-      return self._tensor_lookup(inputs)
+
+    # For normal tensor inputs
+    inputs = ops.convert_to_tensor_v2_with_dispatch(inputs)
+    return self._tensor_lookup(inputs)
 
   def _eval(self, tensor):
     if self.use_v1_apis:
@@ -162,7 +171,7 @@ def get_vocabulary_from_file(vocabulary_path, encoding="utf-8"):
         token = text
       elif isinstance(text, bytes):
         token = text.decode(encoding, "ignore")
-      token = token.strip()
+      token = token.rstrip(os.linesep)
       vocab.append(token)
   return vocab
 

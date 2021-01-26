@@ -7,13 +7,14 @@ load(
 )
 load(
     "//tensorflow/lite/micro:build_def.bzl",
-    "cc_library",
     "micro_copts",
 )
 
-package(default_visibility = ["//visibility:public"])
-
-licenses(["notice"])  # Apache 2.0
+package(
+    default_visibility = ["//visibility:public"],
+    features = ["-layering_check"],
+    licenses = ["notice"],  # Apache 2.0
+)
 
 cc_library(
     name = "model",
@@ -23,7 +24,6 @@ cc_library(
     hdrs = [
         "model.h",
     ],
-    build_for_embedded = True,
     copts = micro_copts(),
 )
 
@@ -34,7 +34,6 @@ tflite_micro_cc_test(
     ],
     deps = [
         ":model",
-        "//tensorflow/lite:schema_fbs_version",
         "//tensorflow/lite/micro:micro_error_reporter",
         "//tensorflow/lite/micro:micro_framework",
         "//tensorflow/lite/micro:op_resolvers",
@@ -85,7 +84,6 @@ cc_binary(
         ":constants",
         ":model",
         ":output_handler",
-        "//tensorflow/lite:schema_fbs_version",
         "//tensorflow/lite/micro:micro_error_reporter",
         "//tensorflow/lite/micro:micro_framework",
         "//tensorflow/lite/micro:op_resolvers",

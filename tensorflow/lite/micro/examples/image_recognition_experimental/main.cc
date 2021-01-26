@@ -24,7 +24,6 @@ limitations under the License.
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/version.h"
 
 #define NUM_OUT_CH 3
 #define CNN_IMG_SIZE 32
@@ -64,7 +63,7 @@ int main(int argc, char** argv) {
 
   constexpr int tensor_arena_size = 50 * 1024;
   uint8_t tensor_arena[tensor_arena_size];
-  tflite::MicroInterpreter interpreter(model, resolver, tensor_arena,
+  tflite::MicroInterpreter interpreter(model, micro_op_resolver, tensor_arena,
                                        tensor_arena_size, error_reporter);
   interpreter.AllocateTensors();
 

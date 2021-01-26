@@ -221,8 +221,9 @@ def NameListToString(name_list):
     return name_list
   else:
     result = ""
-    for val in name_list:
-      result = result + chr(int(val))
+    if name_list is not None:
+      for val in name_list:
+        result = result + chr(int(val))
     return result
 
 
@@ -451,6 +452,10 @@ def CreateHtmlFile(tflite_input, html_output):
   operator_keys_to_display = [("builtin_code", BuiltinCodeToName),
                               ("custom_code", None),
                               ("version", None)]
+
+  # Update builtin code fields.
+  for idx, d in enumerate(data["operator_codes"]):
+    d["builtin_code"] = max(d["builtin_code"], d["deprecated_builtin_code"])
 
   for subgraph_idx, g in enumerate(data["subgraphs"]):
     # Subgraph local specs on what to display

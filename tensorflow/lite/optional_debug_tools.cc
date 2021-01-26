@@ -14,7 +14,15 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/optional_debug_tools.h"
 
+#include <stddef.h>
+#include <stdio.h>
+
+#include <utility>
+#include <vector>
+
+#include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+
 namespace tflite {
 
 void PrintIntVector(const std::vector<int>& v) {
@@ -49,6 +57,8 @@ const char* TensorTypeName(TfLiteType type) {
       return "kTfLiteInt8";
     case kTfLiteInt64:
       return "kTfLiteInt64";
+    case kTfLiteUInt64:
+      return "kTfLiteUInt64";
     case kTfLiteString:
       return "kTfLiteString";
     case kTfLiteBool:
@@ -57,6 +67,8 @@ const char* TensorTypeName(TfLiteType type) {
       return "kTfLiteInt16";
     case kTfLiteComplex64:
       return "kTfLiteComplex64";
+    case kTfLiteComplex128:
+      return "kTfLiteComplex128";
     case kTfLiteFloat16:
       return "kTfLiteFloat16";
     case kTfLiteFloat64:
@@ -79,6 +91,8 @@ const char* AllocTypeName(TfLiteAllocationType type) {
       return "kTfLiteArenaRwPersistent";
     case kTfLitePersistentRo:
       return "kTfLitePersistentRo";
+    case kTfLiteCustom:
+      return "kTfLiteCustom";
   }
   return "(invalid)";
 }

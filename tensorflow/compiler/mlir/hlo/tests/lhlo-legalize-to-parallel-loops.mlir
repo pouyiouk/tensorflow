@@ -1,4 +1,4 @@
-// RUN: mlir-hlo-opt %s -lhlo-legalize-to-parallel-loops -canonicalize -split-input-file | FileCheck %s
+// RUN: mlir-hlo-opt %s -lhlo-legalize-to-parallel-loops -canonicalize -split-input-file | FILECHECK_OPTS="" FileCheck %s
 
 func @reduce(%arg: memref<100x10x5xf32>,
              %init: memref<f32>,
@@ -167,11 +167,11 @@ func @reduce_window(%arg: memref<112x112xf32>,
 
 // CHECK:          [[START_I:%.*]] = muli [[I]], [[C2]] : index
 // CHECK:          [[INDEX_I:%.*]] = addi [[START_I]], [[IW]] : index
-// CHECK:          [[INDEX_I_FITS:%.*]] = cmpi "ult", [[INDEX_I]], [[C112]]
+// CHECK:          [[INDEX_I_FITS:%.*]] = cmpi ult, [[INDEX_I]], [[C112]]
 
 // CHECK:          [[START_J:%.*]] = muli [[J]], [[C2]] : index
 // CHECK:          [[INDEX_J:%.*]] = addi [[START_J]], [[JW]] : index
-// CHECK:          [[INDEX_J_FITS:%.*]] = cmpi "ult", [[INDEX_J]], [[C112]]
+// CHECK:          [[INDEX_J_FITS:%.*]] = cmpi ult, [[INDEX_J]], [[C112]]
 // CHECK:          [[IN_BOUNDS_1:%.*]] = and [[INDEX_I_FITS]], [[INDEX_J_FITS]]
 
 // CHECK:          [[ELEM_TO_REDUCE:%.*]] = scf.if [[IN_BOUNDS_1]] -> (f32) {

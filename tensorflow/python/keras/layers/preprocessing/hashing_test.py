@@ -25,8 +25,8 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_spec
-from tensorflow.python.framework import test_util as tf_test_util
 from tensorflow.python.keras import keras_parameterized
+from tensorflow.python.keras import testing_utils
 from tensorflow.python.keras.engine import input_layer
 from tensorflow.python.keras.engine import training
 from tensorflow.python.keras.layers.preprocessing import hashing
@@ -50,6 +50,27 @@ class HashingTest(keras_parameterized.TestCase):
     output = layer(inp)
     # Assert equal for hashed output that should be true on all platforms.
     self.assertAllClose([[0], [0], [1], [0], [0]], output)
+
+  def test_hash_dense_input_mask_value_farmhash(self):
+    empty_mask_layer = hashing.Hashing(num_bins=3, mask_value='')
+    omar_mask_layer = hashing.Hashing(num_bins=3, mask_value='omar')
+    inp = np.asarray([['omar'], ['stringer'], ['marlo'], ['wire'],
+                      ['skywalker']])
+    empty_mask_output = empty_mask_layer(inp)
+    omar_mask_output = omar_mask_layer(inp)
+    # Outputs should be one more than test_hash_dense_input_farmhash (the zeroth
+    # bin is now reserved for masks).
+    self.assertAllClose([[1], [1], [2], [1], [1]], empty_mask_output)
+    # 'omar' should map to 0.
+    self.assertAllClose([[0], [1], [2], [1], [1]], omar_mask_output)
+
+  def test_hash_dense_multi_inputs_mask_value_farmhash(self):
+    layer = hashing.Hashing(num_bins=3, mask_value='omar')
+    inp_1 = np.asarray([['omar'], ['stringer'], ['marlo'], ['wire'],
+                        ['skywalker']])
+    inp_2 = np.asarray([['A'], ['B'], ['C'], ['D'], ['E']])
+    with self.assertRaisesRegex(ValueError, 'not supported yet'):
+      _ = layer([inp_1, inp_2])
 
   def test_hash_dense_multi_inputs_farmhash(self):
     layer = hashing.Hashing(num_bins=2)
@@ -135,6 +156,24 @@ class HashingTest(keras_parameterized.TestCase):
     self.assertAllClose(indices, output.indices)
     self.assertAllClose([0, 0, 1, 0, 0], output.values)
 
+  def test_hash_sparse_input_mask_value_farmhash(self):
+    empty_mask_layer = hashing.Hashing(num_bins=3, mask_value='')
+    omar_mask_layer = hashing.Hashing(num_bins=3, mask_value='omar')
+    indices = [[0, 0], [1, 0], [1, 1], [2, 0], [2, 1]]
+    inp = sparse_tensor.SparseTensor(
+        indices=indices,
+        values=['omar', 'stringer', 'marlo', 'wire', 'skywalker'],
+        dense_shape=[3, 2])
+    empty_mask_output = empty_mask_layer(inp)
+    omar_mask_output = omar_mask_layer(inp)
+    self.assertAllClose(indices, omar_mask_output.indices)
+    self.assertAllClose(indices, empty_mask_output.indices)
+    # Outputs should be one more than test_hash_sparse_input_farmhash (the
+    # zeroth bin is now reserved for masks).
+    self.assertAllClose([1, 1, 2, 1, 1], empty_mask_output.values)
+    # 'omar' should map to 0.
+    self.assertAllClose([0, 1, 2, 1, 1], omar_mask_output.values)
+
   def test_hash_sparse_multi_inputs_farmhash(self):
     layer = hashing.Hashing(num_bins=2)
     indices = [[0, 0], [1, 0], [2, 0]]
@@ -216,6 +255,22 @@ class HashingTest(keras_parameterized.TestCase):
     out_t = layer(inp_t)
     model = training.Model(inputs=inp_t, outputs=out_t)
     self.assertAllClose(out_data, model.predict(inp_data))
+
+  def test_hash_ragged_input_mask_value(self):
+    empty_mask_layer = hashing.Hashing(num_bins=3, mask_value='')
+    omar_mask_layer = hashing.Hashing(num_bins=3, mask_value='omar')
+    inp_data = ragged_factory_ops.constant(
+        [['omar', 'stringer', 'marlo', 'wire'], ['marlo', 'skywalker', 'wire']],
+        dtype=dtypes.string)
+    empty_mask_output = empty_mask_layer(inp_data)
+    omar_mask_output = omar_mask_layer(inp_data)
+    # Outputs should be one more than test_hash_ragged_string_input_farmhash
+    # (the zeroth bin is now reserved for masks).
+    expected_output = [[1, 1, 2, 1], [2, 1, 1]]
+    self.assertAllClose(expected_output, empty_mask_output)
+    # 'omar' should map to 0.
+    expected_output = [[0, 1, 2, 1], [2, 1, 1]]
+    self.assertAllClose(expected_output, omar_mask_output)
 
   def test_hash_ragged_string_multi_inputs_farmhash(self):
     layer = hashing.Hashing(num_bins=2)
@@ -311,7 +366,7 @@ class HashingTest(keras_parameterized.TestCase):
     self.assertEqual(output_spec.shape.dims, input_shape.dims)
     self.assertEqual(output_spec.dtype, dtypes.int64)
 
-  @tf_test_util.run_v2_only
+  @testing_utils.run_v2_only
   def test_config_with_custom_name(self):
     layer = hashing.Hashing(num_bins=2, name='hashing')
     config = layer.get_config()

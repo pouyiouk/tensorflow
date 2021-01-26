@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/core/common_runtime/eager/attr_builder.h"
+#include "tensorflow/core/common_runtime/eager/custom_device.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
 #include "tensorflow/core/framework/op_def.pb.h"
@@ -78,14 +79,15 @@ bool IsFunction(StringPiece op_name) {
 
 bool IsCustomDevice(StringPiece device_name, const EagerContext& ctx) {
   CustomDevice* custom_device;
-  return ctx.FindCustomDeviceFromName(string(device_name), &custom_device).ok();
+  return ctx.FindCustomDeviceFromName(string(device_name), &custom_device);
 }
 
-Status MaybePinSmallOpsToCpu(bool* result, StringPiece op_name,
-                             absl::Span<ImmediateExecutionTensorHandle*> args,
-                             const EagerContext& ctx) {
-  if (!ctx.PinSmallOpsToCPU() || IsFunction(op_name) ||
-      IsColocationExempt(op_name) || !IsPinnableOp(op_name)) {
+Status MaybePinSmallOpsToCpu(
+    bool* result, StringPiece op_name,
+    absl::Span<ImmediateExecutionTensorHandle* const> args,
+    StringPiece cpu_device_name) {
+  if (IsFunction(op_name) || IsColocationExempt(op_name) ||
+      !IsPinnableOp(op_name)) {
     *result = false;
     return Status::OK();
   }
@@ -104,16 +106,12 @@ Status MaybePinSmallOpsToCpu(bool* result, StringPiece op_name,
     const char* device_name = arg->DeviceName(&s);
     DataType dtype = arg->DataType();
     TF_RETURN_IF_ERROR(s);
-    if (IsCustomDevice(device_name, ctx)) {
-      *result = false;
-      return Status::OK();
-    }
 
     DVLOG(2) << "for op " << op_name << " input " << i << " "
              << DataTypeString(dtype) << " input device = " << device_name;
 
     // Input is on CPU.
-    if (device_name != ctx.HostCPU()->name()) {
+    if (device_name != cpu_device_name) {
       *result = false;
       return Status::OK();
     }
@@ -141,17 +139,18 @@ Status MaybePinSmallOpsToCpu(bool* result, StringPiece op_name,
   return Status::OK();
 }
 
-Status MaybePinToResourceDevice(VariantDevice* device,
-                                const EagerOperation& op) {
+Status MaybePinToResourceDevice(Device** device, const EagerOperation& op) {
   if (op.colocation_exempt()) {
     return Status::OK();
   }
   EagerContext& ctx = op.EagerContext();
+  const absl::InlinedVector<TensorHandle*, 4>* inputs;
+  TF_RETURN_IF_ERROR(op.TensorHandleInputs(&inputs));
   Device* op_device = op.Device() == kVariantDeviceNull
                           ? ctx.HostCPU()
                           : absl::get<Device*>(op.Device());
-  for (int i = 0; i < op.Inputs().size(); ++i) {
-    TensorHandle* tensor_handle = op.Inputs()[i];
+  for (int i = 0; i < inputs->size(); ++i) {
+    TensorHandle* tensor_handle = (*inputs)[i];
     if (tensor_handle->dtype == DT_RESOURCE) {
       if (tensor_handle->resource_remote_device_incarnation() != 0) {
         TF_RETURN_IF_ERROR(ValidateTensorHandleRemoteDevice(
@@ -184,41 +183,65 @@ Status MaybePinToResourceDevice(VariantDevice* device,
 }
 
 Status MaybePinToCustomDevice(VariantDevice* device, const EagerOperation& op) {
-  // If operation was already placed on a custom device, use it.
-  if (VariantDeviceIsCustom(op.Device())) {
-    *device = op.Device();
-    return Status::OK();
-  }
-
+  // Ops are placed on a custom device if there's no other explicit requested
+  // placement and there is only one custom device in the op
+  // inputs.
+  //
+  // Resource-dtype inputs take precedence over non-resource inputs and explicit
+  // placements; this function pins ops with a resource-dtype custom device
+  // input to that custom device.
+  CustomDevice* first = nullptr;
   if (!op.Inputs().empty()) {
-    // We keep track of what we've seen with devices instead of booleans to be
-    // able to provide a meaningful error message below.
-    VariantDevice first = op.Inputs()[0]->device();
-    VariantDevice different = first;  // A different input device, if any.
-    VariantDevice custom = first;     // The first custom device seen, or an
-                                      // arbitrary non-custom device otherwise.
-    for (size_t i = 1; first == different && i < op.Inputs().size(); ++i) {
-      VariantDevice device = op.Inputs()[i]->device();
-      if (device != first) {
-        different = device;
-      }
-      if (!VariantDeviceIsCustom(custom) && VariantDeviceIsCustom(device)) {
-        custom = device;
-      }
-      if (different != first && VariantDeviceIsCustom(custom)) {
-        return errors::InvalidArgument(absl::StrCat(
-            "If an operation has one of its inputs in a custom device, then "
-            "all inputs should be on that same device. Operation ",
-            op.Name(), " has one input in custom device ",
-            VariantDeviceName(custom),
-            " and at least one input in a different device ",
-            VariantDeviceName(custom == first ? different : first)));
+    for (const ImmediateExecutionTensorHandle* generic_input : op.Inputs()) {
+      // TODO(b/175427838): It would be nice to be able to use tensorflow::isa
+      // here.
+      if (CustomDeviceTensorHandle::classof(generic_input)) {
+        const CustomDeviceTensorHandle* input =
+            down_cast<const CustomDeviceTensorHandle*>(generic_input);
+        CustomDevice* current = input->device();
+        if (first == nullptr) {
+          first = current;
+        } else if (first != current) {
+          return errors::InvalidArgument(absl::StrCat(
+              "If an operation has one of its inputs in a custom device, then "
+              "all inputs should be on that same custom device or another "
+              "physical device. Operation ",
+              op.Name(),
+              " has one input in custom "
+              "device ",
+              first->name(),
+              " and at least one input in a different custom device ",
+              current->name()));
+        }
       }
     }
-    if (different == first && VariantDeviceIsCustom(custom)) {
-      *device = first;
-      return Status::OK();
+    for (const ImmediateExecutionTensorHandle* generic_input : op.Inputs()) {
+      if (generic_input->DataType() == DT_RESOURCE) {
+        if (CustomDeviceTensorHandle::classof(generic_input)) {
+          const CustomDeviceTensorHandle* input =
+              down_cast<const CustomDeviceTensorHandle*>(generic_input);
+          // There's only one custom device input, and it's a resource input, so
+          // we'll force-place the op on to that custom device. As with physical
+          // devices, this overrides any explicit placement for the op.
+          *device = input->device();
+          return Status::OK();
+        } else {
+          // Don't set a custom device if there's a physical-device resource
+          // input.
+          return Status::OK();
+        }
+      }
     }
+  }
+  // Since there are no resource-dtype inputs, we'll respect explicit placements
+  // before considering input-based placement.
+  if (absl::holds_alternative<CustomDevice*>(op.Device())) {
+    *device = op.Device();
+  } else if (op.DeviceName().empty() && first != nullptr) {
+    // If there are non-resource inputs on a custom device we will default the
+    // op to that custom device, but not override an explicit op placement.
+    *device = first;
+    return Status::OK();
   }
 
   return Status::OK();

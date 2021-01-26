@@ -128,6 +128,13 @@ cc_library(
 )
 
 cc_library(
+    name = "cublasLt",
+    srcs = ["cuda/lib/%{cublasLt_lib}"],
+    data = ["cuda/lib/%{cublasLt_lib}"],
+    linkstatic = 1,
+)
+
+cc_library(
     name = "cusolver",
     srcs = ["cuda/lib/%{cusolver_lib}"],
     data = ["cuda/lib/%{cusolver_lib}"],
@@ -168,12 +175,18 @@ cc_library(
     name = "cuda",
     deps = [
         ":cublas",
+        ":cublasLt",
         ":cuda_headers",
         ":cudart",
         ":cudnn",
         ":cufft",
         ":curand",
     ],
+)
+
+alias(
+    name = "cub_headers",
+    actual = "%{cub_actual}"
 )
 
 cuda_header_library(
@@ -202,14 +215,6 @@ cc_library(
     data = [":cuda-nvvm"],
 )
 
-filegroup(
-    name = "cuda_root",
-    srcs = [
-        "cuda/bin/fatbinary",
-        "cuda/bin/bin2c",
-    ],
-)
-
 bzl_library(
     name = "build_defs_bzl",
     srcs = ["build_defs.bzl"],
@@ -224,3 +229,4 @@ py_library(
 )
 
 %{copy_rules}
+

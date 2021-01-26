@@ -42,8 +42,8 @@ constexpr int64 kAutotune = -1;
 constexpr char kParallelism[] = "parallelism";
 constexpr char kBufferSize[] = "buffer_size";
 
-// A key used to identify input time gradient.
-constexpr char kInputTimeKey[] = "input_time";
+// A key used to identify the input time of the model.
+constexpr char kModelInputTimeKey[] = "model_input_time";
 
 enum class AutotuneAlgorithm {
   HILL_CLIMB = 0,
@@ -77,7 +77,14 @@ struct Parameter {
   Parameter(const string& name, std::shared_ptr<SharedState> state, double min,
             double max)
       : name(name),
-        value(state->value),
+        // Sometimes non-autotune nodes (with `autotune_=false`) may contain
+        // parameters (for example inputs of parallel interleave dataset which
+        // are not in the current cycle). To avoid unrealistic situation
+        // (say `buffer_size=-1` or `parallelism=-1`) in the optimization
+        // computation, if the state value is `kAutotune=-1` (just to indicate
+        // the `SharedState` is tunable), we initialize the parameter value to
+        // be the minimal value of the state.
+        value(state->value == kAutotune ? min : state->value),
         min(min),
         max(max),
         state(std::move(state)) {}
@@ -244,6 +251,12 @@ class Node {
   // Returns the node output.
   Node* output() const { return output_; }
 
+  // Returns the parameter value.
+  double parameter_value(const string& name) const TF_LOCKS_EXCLUDED(mu_) {
+    tf_shared_lock l(mu_);
+    return parameters_.at(name)->state->value;
+  }
+
   // Returns the aggregate processing time.
   int64 processing_time() const TF_LOCKS_EXCLUDED(mu_) {
     return processing_time_;
@@ -282,6 +295,10 @@ class Node {
       VLOG(1) << "Encountered a stop event without a matching start event.";
     }
   }
+
+  // Returns whether work is currently being recorded, i.e. whether we are
+  // currently between a `record_start` and a `record_stop`.
+  bool is_recording() TF_LOCKS_EXCLUDED(mu_) { return work_start_ > 0; }
 
   // Removes an input.
   void remove_input(std::shared_ptr<Node> input) TF_LOCKS_EXCLUDED(mu_) {
@@ -339,8 +356,7 @@ class Node {
   //
   // The purpose for this method is to allow the model optimization logic to
   // operate over immutable state while allowing concurrent model updates.
-  std::shared_ptr<Node> Snapshot(std::shared_ptr<Node> output) const
-      TF_LOCKS_EXCLUDED(mu_);
+  std::shared_ptr<Node> Snapshot() const TF_LOCKS_EXCLUDED(mu_);
 
   // Returns the per-element processing time spent in this node.
   double SelfProcessingTime() const TF_LOCKS_EXCLUDED(mu_);
@@ -479,11 +495,15 @@ class Node {
 
   // Returns a vector of nodes of the subtree rooted in this node. The nodes are
   // either in breadth-first search or reverse breadth-first search order
-  // depending on the `order` argument. The root node itself is not collected.
-  NodeVector CollectNodes(TraversalOrder order) const
+  // depending on the `order` argument. The nodes are collected based on the
+  // results of the `collect_node` predicate: if the predicate returns `false`
+  // for a given node, then the subtree rooted in this node is excluded. The
+  // root node itself is not collected.
+  NodeVector CollectNodes(TraversalOrder order,
+                          bool collect_node(const std::shared_ptr<Node>)) const
       TF_SHARED_LOCKS_REQUIRED(mu_);
 
-  // Collect tunable parameters for the node.
+  // Collect tunable parameters on the nodes which have recorded elements.
   void CollectTunableParametersHelper(
       absl::flat_hash_map<string, std::shared_ptr<Parameter>>* parameters) const
       TF_SHARED_LOCKS_REQUIRED(mu_);
@@ -493,7 +513,7 @@ class Node {
       const TF_SHARED_LOCKS_REQUIRED(mu_);
 
   // Copy the node and add the (input, copy) pairs to the NodePairList.
-  std::shared_ptr<Node> SnapshotHelper(std::shared_ptr<Node> clone_base,
+  std::shared_ptr<Node> SnapshotHelper(std::shared_ptr<Node> cloned_output,
                                        NodePairList* node_pairs) const;
 
   // Compute total buffered bytes for the node and store in the total bytes map.
@@ -506,6 +526,12 @@ class Node {
   void TotalMaximumBufferedBytesHelper(
       absl::flat_hash_map<string, double>* total_bytes) const
       TF_SHARED_LOCKS_REQUIRED(mu_);
+
+  // Compute and return the maximum buffered bytes on the node itself. By
+  // default non-tunable nodes are assumed not to buffer any bytes, so the
+  // tunable nodes as subclasses are expected to override this method to ensure
+  // that the optimization algorithm respects the memory budget.
+  virtual double MaximumBufferedBytes() const TF_SHARED_LOCKS_REQUIRED(mu_);
 
   // Stores the time passed to the last call to `Node::record_start()` on the
   // current thread.
@@ -610,8 +636,8 @@ class Model {
   void FlushMetrics() TF_LOCKS_EXCLUDED(mu_);
 
   // Uses the given algorithm to perform the autotuning optimization.
-  void Optimize(AutotuneAlgorithm algorithm, int64 cpu_budget, int64 ram_budget)
-      TF_LOCKS_EXCLUDED(mu_);
+  void Optimize(AutotuneAlgorithm algorithm, int64 cpu_budget, int64 ram_budget,
+                double model_input_time) TF_LOCKS_EXCLUDED(mu_);
 
   // Removes the given node.
   void RemoveNode(std::shared_ptr<Node> node) TF_LOCKS_EXCLUDED(mu_);
@@ -622,16 +648,17 @@ class Model {
   absl::flat_hash_map<string, std::shared_ptr<Parameter>>
   CollectTunableParameters(std::shared_ptr<Node> node);
 
-  // Collects "essential" parallelism parameters of transformations in the tree
-  // rooted in the given node. Which parameters are essential is determined by
-  // comparison the processing time spent in the corresponding transformation
-  // relative to other transformations. The collected parameters are returned
-  // as a mapping from a (unique) node name to a parallelism parameter.
-  absl::flat_hash_map<string, std::shared_ptr<Parameter>>
-  CollectEssentialParallelism(
-      std::shared_ptr<Node> node,
+  // Determines if we should stop the gradient descent optimization iterations
+  // based on number of increasable parameters, CPU budget, RAM budget and
+  // current resource usage.
+  bool ShouldStop(
+      int64 cpu_budget, int64 ram_budget,
+      const absl::flat_hash_map<string, std::shared_ptr<Parameter>>& parameters,
       const absl::flat_hash_map<string, std::shared_ptr<Parameter>>&
-          parameters);
+          parallelism_parameters,
+      const absl::flat_hash_map<string, std::shared_ptr<Parameter>>&
+          buffer_size_parameters,
+      std::shared_ptr<Node> snapshot, bool* cpu_budget_reached);
 
   // This optimization algorithm starts by setting all tunable parallelism
   // parameters to the minimum value. It then repeatedly identifies the
@@ -639,7 +666,8 @@ class Model {
   // This process is repeated until all parameters reach their maximum values or
   // the projected output time is less than or equal to the processing time
   // needed to produce an element divided by CPU budget.
-  void OptimizeHillClimb(int64 cpu_budget, int64 ram_budget);
+  void OptimizeHillClimb(int64 cpu_budget, int64 ram_budget,
+                         double model_input_time);
 
   // This optimization algorithm starts by setting all tunable parallelism
   // parameters to the minimum value. It then improves current parameters by
@@ -648,12 +676,13 @@ class Model {
   // repeated until either the output time improvement is smaller than threshold
   // value or the output time is less than the processing time needed to produce
   // an element divided by CPU budget.
-  void OptimizeGradientDescent(int64 cpu_budget, int64 ram_budget);
+  void OptimizeGradientDescent(int64 cpu_budget, int64 ram_budget,
+                               double model_input_time);
 
   // Collects the output time and if `gradients` is not `nullptr`, the output
   // time gradient w.r.t. tunable parameters of the subtree rooted in the given
   // node.
-  double OutputTime(std::shared_ptr<Node> node,
+  double OutputTime(std::shared_ptr<Node> node, double model_input_time,
                     absl::flat_hash_map<string, double>* gradients);
 
   // Collects the processing time for the given node.
@@ -680,8 +709,8 @@ class Model {
   // (e.g. CPU, memory). The logic for collecting this information assumes that
   // the collection is not repeatedly disabled and enabled. As a consequence,
   // the implementation starts collecting resource usage when it encounters a
-  // tunable parameter (because the information is used for for tuning the value
-  // of the parameter) and never stops.
+  // tunable parameter (because the information is used for tuning the value of
+  // the parameter) and never stops.
   std::atomic<bool> collect_resource_usage_;
 };
 
