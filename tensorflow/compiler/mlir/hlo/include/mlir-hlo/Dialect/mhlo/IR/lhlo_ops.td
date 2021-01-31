@@ -544,17 +544,22 @@ def LHLO_ReducePrecisionOp: LHLO_Op<"reduce_precision", [SameTypeOperands]>,
   );
 }
 
-def LHLO_AllReduceOp : LHLO_Op<"all_reduce", [SameTypeOperands]>,
+def LHLO_AllReduceOp : LHLO_Op<"all_reduce", [SameVariadicOperandSize]>,
                        BASE_HLO_AllReduceOp {
   let arguments = (ins
-    Arg<LHLO_Buffer, "", [MemRead]>:$operand,
-    Arg<LHLO_Buffer, "", [MemWrite]>:$output,
+    Arg<Variadic<LHLO_Buffer>, "", [MemRead]>:$operands,
+    Arg<Variadic<LHLO_Buffer>, "", [MemWrite]>:$results,
     I64ElementsAttr:$replica_groups,
     DefaultValuedAttr<BoolAttr, "false">:$constrain_layout,
     OptionalAttr<ChannelHandle>:$channel_id,
     DefaultValuedAttr<BoolAttr, "false">:$use_global_device_ids
   );
   let regions = (region SizedRegion<1>:$computation);
+  let verifier = [{ return Verify(*this); }];
+  let extraClassDeclaration = [{
+    // AllReduce is cross replica if channel_id is not set.
+    bool IsCrossReplica() { return !channel_id().hasValue(); }
+  }];
 }
 
 def LHLO_CollectivePermuteOp: LHLO_Op<"collective_permute", [SameTypeOperands]>,
@@ -600,6 +605,10 @@ def LHLO_OutfeedOp: LHLO_Op<"outfeed", []> {
 }
 
 def LHLO_ReplicaIdOp : LHLO_Op<"replica_id", []>, BASE_HLO_ReplicaIdOp {
+  let arguments = (ins Arg<MemRefOf<[UI32]>, "", [MemWrite]>);
+}
+
+def LHLO_PartitionIdOp : LHLO_Op<"partition_id", []>, BASE_HLO_PartitionIdOp {
   let arguments = (ins Arg<MemRefOf<[UI32]>, "", [MemWrite]>);
 }
 

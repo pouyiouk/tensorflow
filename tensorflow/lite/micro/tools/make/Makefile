@@ -259,6 +259,7 @@ tensorflow/lite/micro/testing_helpers_test.cc \
 tensorflow/lite/micro/kernels/activations_test.cc \
 tensorflow/lite/micro/kernels/add_test.cc \
 tensorflow/lite/micro/kernels/arg_min_max_test.cc \
+tensorflow/lite/micro/kernels/cast_test.cc \
 tensorflow/lite/micro/kernels/ceil_test.cc \
 tensorflow/lite/micro/kernels/circular_buffer_test.cc \
 tensorflow/lite/micro/kernels/comparisons_test.cc \
@@ -268,6 +269,7 @@ tensorflow/lite/micro/kernels/depthwise_conv_test.cc \
 tensorflow/lite/micro/kernels/dequantize_test.cc \
 tensorflow/lite/micro/kernels/detection_postprocess_test.cc \
 tensorflow/lite/micro/kernels/elementwise_test.cc \
+tensorflow/lite/micro/kernels/exp_test.cc \
 tensorflow/lite/micro/kernels/floor_test.cc \
 tensorflow/lite/micro/kernels/fully_connected_test.cc \
 tensorflow/lite/micro/kernels/hard_swish_test.cc \
@@ -304,6 +306,7 @@ MICROLITE_CC_KERNEL_SRCS := \
 tensorflow/lite/micro/kernels/activations.cc \
 tensorflow/lite/micro/kernels/add.cc \
 tensorflow/lite/micro/kernels/arg_min_max.cc \
+tensorflow/lite/micro/kernels/cast.cc \
 tensorflow/lite/micro/kernels/ceil.cc \
 tensorflow/lite/micro/kernels/circular_buffer.cc \
 tensorflow/lite/micro/kernels/comparisons.cc \
@@ -315,6 +318,7 @@ tensorflow/lite/micro/kernels/dequantize.cc \
 tensorflow/lite/micro/kernels/detection_postprocess.cc \
 tensorflow/lite/micro/kernels/elementwise.cc \
 tensorflow/lite/micro/kernels/ethosu.cc \
+tensorflow/lite/micro/kernels/exp.cc \
 tensorflow/lite/micro/kernels/flexbuffers_generated_data.cc \
 tensorflow/lite/micro/kernels/floor.cc \
 tensorflow/lite/micro/kernels/fully_connected.cc \
@@ -399,6 +403,7 @@ tensorflow/lite/kernels/internal/reference/conv.h \
 tensorflow/lite/kernels/internal/reference/depthwiseconv_float.h \
 tensorflow/lite/kernels/internal/reference/depthwiseconv_uint8.h \
 tensorflow/lite/kernels/internal/reference/dequantize.h \
+tensorflow/lite/kernels/internal/reference/exp.h \
 tensorflow/lite/kernels/internal/reference/floor.h \
 tensorflow/lite/kernels/internal/reference/fully_connected.h \
 tensorflow/lite/kernels/internal/reference/hard_swish.h \

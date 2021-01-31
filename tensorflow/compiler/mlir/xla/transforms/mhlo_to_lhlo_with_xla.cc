@@ -323,6 +323,8 @@ StatusOr<mlir::Operation*> LhloDialectEmitter::EmitOp(
       return CreateOpWithoutAttrs<lmhlo::OrOp>(instr);
     case HloOpcode::kOutfeed:
       return EmitOutfeedOp(instr);
+    case HloOpcode::kPartitionId:
+      return CreateOpWithoutAttrs<lmhlo::PartitionIdOp>(instr);
     case HloOpcode::kPad:
       return EmitPadOp(instr);
     case HloOpcode::kPopulationCount:
@@ -339,6 +341,8 @@ StatusOr<mlir::Operation*> LhloDialectEmitter::EmitOp(
       return EmitReduceWindowOp(instr);
     case HloOpcode::kRemainder:
       return CreateOpWithoutAttrs<lmhlo::RemOp>(instr);
+    case HloOpcode::kReplicaId:
+      return CreateOpWithoutAttrs<lmhlo::ReplicaIdOp>(instr);
     case HloOpcode::kReverse:
       return EmitReverseOp(instr);
     case HloOpcode::kRoundNearestAfz:
@@ -1014,9 +1018,11 @@ StatusOr<lmhlo::AllReduceOp> LhloDialectEmitter::EmitAllReduceOp(
   all_reduce_op->setAttr(replica_groups_attr.first, replica_groups_attr.second);
   all_reduce_op.constrain_layoutAttr(
       builder_.getBoolAttr(all_reduce->constrain_layout()));
-  all_reduce_op.channel_idAttr(mlir::mhlo::ChannelHandle::get(
-      builder_.getI64IntegerAttr(all_reduce->channel_id().value_or(0)),
-      builder_.getI64IntegerAttr(0), builder_.getContext()));
+  if (all_reduce->channel_id().has_value()) {
+    all_reduce_op.channel_idAttr(mlir::mhlo::ChannelHandle::get(
+        builder_.getI64IntegerAttr(all_reduce->channel_id().value()),
+        builder_.getI64IntegerAttr(0), builder_.getContext()));
+  }
   all_reduce_op.use_global_device_idsAttr(
       builder_.getBoolAttr(all_reduce->use_global_device_ids()));
   TF_RETURN_IF_ERROR(xla::HloFunctionImporter::ImportAsRegion(
@@ -1269,7 +1275,7 @@ StatusOr<Value> LhloDialectEmitter::GetOrCreateArrayView(
           "Failed to get strides and offset from the output type.");
     result = builder_.create<MemRefReinterpretCastOp>(
         loc, out_memref_type, result, out_offset, out_memref_type.getShape(),
-        out_strides, llvm::None, llvm::None, llvm::None);
+        out_strides);
   }
   return cached_value = result;
 }
@@ -1309,6 +1315,9 @@ Status LhloDialectEmitter::GetOrCreateView(
 }
 
 Status LhloDialectEmitter::Initialize() {
+  mlir::IntegerAttr unique_id =
+      builder_.getI32IntegerAttr(computation_.parent()->unique_id());
+  module_->setAttr("hlo.unique_id", unique_id);
   std::string function_name =
       computation_.name().empty() ? "__compute" : computation_.name();
 
