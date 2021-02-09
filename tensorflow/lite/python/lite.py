@@ -411,6 +411,7 @@ class QuantizationMode(object):
     """Checks if the graph contains any training-time quantization ops."""
     training_quant_ops = frozenset({
         "FakeQuantWithMinMaxVars", "FakeQuantWithMinMaxVarsPerChannel",
+        "FakeQuantWithMinMaxArgs", "FakeQuantWithMinMaxArgsPerChannel",
         "QuantizeAndDequantizeV2", "QuantizeAndDequantizeV3"
     })
 
@@ -719,6 +720,7 @@ class TFLiteSavedModelConverterV2(TFLiteConverterBaseV2):
     self._saved_model_exported_names = saved_model_exported_names
     self._trackable_obj = trackable_obj
     self._parse_saved_model_args(always_enable_saved_model_import=True)
+    self._enable_tflite_resource_variables = False
 
   def convert(self):
     """Converts a TensorFlow GraphDef based on instance variables.
@@ -778,6 +780,10 @@ class TFLiteSavedModelConverterV2(TFLiteConverterBaseV2):
 
     converter_kwargs = self._get_base_converter_args()
     converter_kwargs.update(quant_mode.converter_flags())
+    converter_kwargs.update({
+        "enable_tflite_resource_variables":
+            self._enable_tflite_resource_variables
+    })
 
     result = _convert_saved_model(**converter_kwargs)
     calibrate_and_quantize, flags = quant_mode.quantizer_flags()
