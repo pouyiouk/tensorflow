@@ -647,7 +647,8 @@ class TextFileInitializer(TableInitializerBase):
                value_index,
                vocab_size=None,
                delimiter="\t",
-               name=None):
+               name=None,
+               value_index_offset=0):
     """Constructs a table initializer object to populate from a text file.
 
     It generates one key-value pair per line. The type of table key and
@@ -658,7 +659,7 @@ class TextFileInitializer(TableInitializerBase):
     - TextFileIndex.LINE_NUMBER means use the line number starting from zero,
       expects data type int64.
     - TextFileIndex.WHOLE_LINE means use the whole line content, expects data
-      type string.
+      type string or int64.
     - A value >=0 means use the index (starting at zero) of the split line based
       on `delimiter`.
 
@@ -675,6 +676,13 @@ class TextFileInitializer(TableInitializerBase):
       vocab_size: The number of elements in the file, if known.
       delimiter: The delimiter to separate fields in a line.
       name: A name for the operation (optional).
+      value_index_offset: A number to add to all indices extracted from the file
+        This is useful for cases where a user would like to reserve one or more
+        low index values for control characters. For instance, if you would
+        like to ensure that no vocabulary item is mapped to index 0 (so you can
+        reserve 0 for a masking value), you can set value_index_offset to 1;
+        this will mean that the first vocabulary element is mapped to 1
+        instead of 0.
 
     Raises:
       ValueError: when the filename is empty, or when the table key and value
@@ -704,9 +712,11 @@ class TextFileInitializer(TableInitializerBase):
     if value_index == TextFileIndex.LINE_NUMBER and value_dtype != dtypes.int64:
       raise ValueError("Signature mismatch. Values must be dtype %s, got %s." %
                        (dtypes.int64, value_dtype))
-    if value_index == TextFileIndex.WHOLE_LINE and value_dtype != dtypes.string:
-      raise ValueError("Signature mismatch. Values must be dtype %s, got %s." %
-                       (dtypes.string, value_dtype))
+    if ((value_index == TextFileIndex.WHOLE_LINE) and
+        (not value_dtype.is_integer) and (value_dtype != dtypes.string)):
+      raise ValueError(
+          "Signature mismatch. Values must be integer or string, got %s." %
+          (value_dtype))
 
     if (vocab_size is not None) and (vocab_size <= 0):
       raise ValueError("Invalid vocab_size %s." % vocab_size)
@@ -718,6 +728,7 @@ class TextFileInitializer(TableInitializerBase):
     self._name = name
     self._filename = self._track_trackable(
         trackable.Asset(filename), "_filename")
+    self._offset = value_index_offset
 
     super(TextFileInitializer, self).__init__(key_dtype, value_dtype)
 
@@ -740,7 +751,8 @@ class TextFileInitializer(TableInitializerBase):
           self._filename, dtypes.string, name="asset_filepath")
       init_op = gen_lookup_ops.initialize_table_from_text_file_v2(
           table.resource_handle, filename, self._key_index, self._value_index,
-          -1 if self._vocab_size is None else self._vocab_size, self._delimiter)
+          -1 if self._vocab_size is None else self._vocab_size, self._delimiter,
+          self._offset)
     ops.add_to_collection(ops.GraphKeys.TABLE_INITIALIZERS, init_op)
     # If the filename tensor is anything other than a string constant (e.g.,
     # if it is a placeholder) then it does not make sense to track it as an
@@ -785,7 +797,7 @@ class TextFileStringTableInitializer(TextFileInitializer):
     - TextFileIndex.LINE_NUMBER means use the line number starting from zero,
       expects data type int64.
     - TextFileIndex.WHOLE_LINE means use the whole line content, expects data
-      type string.
+      type string or int64.
     - A value >=0 means use the index (starting at zero) of the split line based
       on `delimiter`.
 

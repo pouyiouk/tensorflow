@@ -692,6 +692,7 @@ cuda_py_test(
     python_version = "PY3",
     tags = [
         "multi_and_single_gpu",
+        "no_tfrt",  # TODO(b/179839466): Reenable TFRT after the issue is resolved.
         "no_windows_gpu",  # TODO(b/130551176)
     ],
     deps = [
@@ -706,6 +707,7 @@ cuda_py_test(
         "//tensorflow/python/eager:test",
         "//tensorflow/python/keras/engine",
         "//tensorflow/python/keras/layers:core",
+        "//tensorflow/python/keras/utils:kpl_test_utils",
     ],
 )
 
@@ -858,6 +860,9 @@ tf_py_test(
     srcs = ["parameter_server_training_test.py"],
     python_version = "PY3",
     shard_count = 1,
+    tags = [
+        "no_tfrt",  # TODO(b/180537361): Reenable TFRT after the issue is resolved.
+    ],
     deps = [
         "//tensorflow/python:constant_op",
         "//tensorflow/python:dtypes",
@@ -876,6 +881,7 @@ tf_py_test(
         "//tensorflow/python/eager:def_function",
         "//tensorflow/python/eager:test",
         "//tensorflow/python/keras",
+        "//tensorflow/python/keras/utils:dataset_creator",
     ],
 )
 
