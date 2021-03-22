@@ -987,7 +987,6 @@ class TensorListTest(PForTestCase):
 
     self._test_loop_fn(loop_fn, 2)
 
-  @test_util.disable_tfrt("b/180206304")
   def test_create_inside_and_read(self):
 
     def loop_fn(i):
@@ -2360,6 +2359,9 @@ class SpectralTest(PForTestCase, parameterized.TestCase):
       (fft_ops.rfft2d,),
       (fft_ops.rfft3d,),
   )
+  @test.disable_with_predicate(
+      pred=test.is_built_with_rocm,
+      skip_message="Disable subtest on ROCm due to rocfft issues")
   def test_rfft(self, op_func):
     for dtype in (dtypes.float32, dtypes.float64):
       x = random_ops.random_uniform([2, 3, 4, 3, 4], dtype=dtype)
@@ -2378,6 +2380,9 @@ class SpectralTest(PForTestCase, parameterized.TestCase):
       (fft_ops.irfft2d,),
       (fft_ops.irfft3d,),
   )
+  @test.disable_with_predicate(
+      pred=test.is_built_with_rocm,
+      skip_message="Disable subtest on ROCm due to rocfft issues")
   def test_irfft(self, op_func):
     if config.list_physical_devices("GPU"):
       # TODO(b/149957923): The test is flaky

@@ -61,6 +61,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops_n_z.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/tensor_list.h"
@@ -78,6 +79,9 @@ struct LowerStaticTensorListPass
     : public PassWrapper<LowerStaticTensorListPass, OperationPass<ModuleOp>> {
   LowerStaticTensorListPass() = default;
   LowerStaticTensorListPass(const LowerStaticTensorListPass &) {}
+  explicit LowerStaticTensorListPass(bool allow_tensorlist_pass_through) {
+    this->allow_tensorlist_pass_through = allow_tensorlist_pass_through;
+  }
 
   void runOnOperation() override;
 
@@ -812,7 +816,7 @@ struct ConvertIdentity : public OpConversionPattern<TF::IdentityOp> {
       ConversionPatternRewriter &rewriter) const override {
     Value input = operands[0];
     rewriter.replaceOpWithNewOp<TF::IdentityOp>(op, input.getType(), operands,
-                                                op.getAttrs());
+                                                op->getAttrs());
     return success();
   }
 };
@@ -856,7 +860,8 @@ llvm::SmallSet<int, 4> GetTensorListArgumentsFromWhileOp(TF::WhileOp op) {
 
 // Changes the function type of `cond_func` and `body_func` for the given While
 // op.
-LogicalResult UpdateFunctionTypes(TF::WhileOp op,
+LogicalResult UpdateFunctionTypes(ConversionPatternRewriter &rewriter,
+                                  TF::WhileOp op,
                                   llvm::SmallSet<int, 4> tensor_list_args) {
   int func_index = 0;
   for (FuncOp func : {op.cond_function(), op.body_function()}) {
@@ -902,13 +907,18 @@ LogicalResult UpdateFunctionTypes(TF::WhileOp op,
     // Change `func`'s argument type to `unranked_argument_types`. If it
     // return types contain a `DT_VARIANT`, change it to the unranked type
     // derived from the corresponding argument.
-    func.setType(FunctionType::get(op.getContext(), updated_argument_types,
-                                   updated_result_types));
-
-    // Change the argument type for the first block.
-    llvm::for_each(func.getArguments(), [&](BlockArgument &arg) {
-      arg.setType(updated_argument_types[arg.getArgNumber()]);
+    rewriter.updateRootInPlace(func, [&] {
+      func.setType(FunctionType::get(op.getContext(), updated_argument_types,
+                                     updated_result_types));
     });
+    Region &entry = func.getRegion();
+    TypeConverter::SignatureConversion signature_conversion(
+        entry.getNumArguments());
+    for (auto arg : entry.getArguments()) {
+      signature_conversion.addInputs(
+          arg.getArgNumber(), updated_argument_types[arg.getArgNumber()]);
+    }
+    rewriter.applySignatureConversion(&entry, signature_conversion);
   }
   return success();
 }
@@ -938,9 +948,9 @@ struct ConvertWhile : public OpConversionPattern<TF::WhileOp> {
 
     // Create a new while op with new operands and updated result types.
     auto converted = rewriter.create<TF::WhileOp>(op.getLoc(), result_types,
-                                                  operands, op.getAttrs());
-    converted.removeAttr("T");
-    (void)UpdateFunctionTypes(converted, tensor_list_args);
+                                                  operands, op->getAttrs());
+    converted->removeAttr("T");
+    (void)UpdateFunctionTypes(rewriter, converted, tensor_list_args);
 
     rewriter.replaceOp(op, converted.getResults());
     return success();
@@ -962,7 +972,7 @@ struct ConvertWhileRegion : public OpConversionPattern<TF::WhileRegionOp> {
 
     // Create a new while op with new operands and updated result types.
     auto converted = rewriter.create<TF::WhileRegionOp>(
-        op.getLoc(), result_types, operands, op.getAttrs());
+        op.getLoc(), result_types, operands, op->getAttrs());
 
     // Inline the regions from the old while into the new one, and apply
     // signature conversion to inlined region.
@@ -1035,10 +1045,20 @@ void LowerStaticTensorListPass::runOnOperation() {
       context);
   patterns.insert<ConvertEmptyTensorList, ConvertTensorListReserve>(
       context, allow_tensorlist_pass_through);
-  if (failed(applyPartialConversion(getOperation(), target,
-                                    std::move(patterns)))) {
-    if (!allow_tensorlist_pass_through) {
+  if (!allow_tensorlist_pass_through) {
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
+    }
+  } else {
+    // If `allow_tensorlist_pass_through` is set to true, if legalization fails
+    // we should not leak the diagnostic info outside this pass. Hence we use
+    // a `StatusScopedDiagnosticHandler` here to capture diagnostics generated
+    // within this pass.
+    StatusScopedDiagnosticHandler handler(context);
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
+      auto _ = handler.ConsumeStatus();
     }
   }
 }
@@ -1047,9 +1067,10 @@ void LowerStaticTensorListPass::runOnOperation() {
 
 /// Creates an instance of the TensorFlow Lite dialect LowerStaticTensorList
 /// pass.
-std::unique_ptr<OperationPass<ModuleOp>>
-TFL::CreateLowerStaticTensorListPass() {
-  return std::make_unique<LowerStaticTensorListPass>();
+std::unique_ptr<OperationPass<ModuleOp>> TFL::CreateLowerStaticTensorListPass(
+    bool allow_tensorlist_pass_through) {
+  return std::make_unique<LowerStaticTensorListPass>(
+      allow_tensorlist_pass_through);
 }
 
 static PassRegistration<LowerStaticTensorListPass> pass(

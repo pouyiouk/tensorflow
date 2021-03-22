@@ -91,7 +91,7 @@ class TpuStrategyTest(tf.test.TestCase):
     # Only needed for serving.
     label_inverse_lookup_layer = (
         tf.keras.layers.experimental.preprocessing.StringLookup(
-            num_oov_indices=1,
+            num_oov_indices=0,
             mask_token=None,
             vocabulary=LABEL_VOCAB,
             invert=True))
@@ -186,7 +186,7 @@ class TpuStrategyTest(tf.test.TestCase):
       num_epochs = 4
       num_steps = 7
       for _ in range(num_epochs):
-        accuracy.reset_states()
+        accuracy.reset_state()
         for _ in range(num_steps):
           train_step(distributed_iterator)
 

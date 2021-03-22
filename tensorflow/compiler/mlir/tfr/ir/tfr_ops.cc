@@ -112,6 +112,9 @@ struct TFRInlinerInterface : public DialectInlinerInterface {
 
 TFRDialect::TFRDialect(MLIRContext *context)
     : Dialect(/*name=*/"tfr", context, TypeID::get<TFRDialect>()) {
+  // TFR depends on TensorFlow for its canonicalization
+  context->getOrLoadDialect<TF::TensorFlowDialect>();
+
   addTypes<TFRTensorType, TFRTensorListType, TFRAttrType>();
   addOperations<
 #define GET_OP_LIST
@@ -610,7 +613,7 @@ Type TFRDialect::parseType(DialectAsmParser &parser) const {
   } else if (typeNameSpelling == "tensor_list") {
     return TFRTensorListType::getChecked(attrs, loc);
   } else if (typeNameSpelling == "attr") {
-    return TFRAttrType::getChecked(loc);
+    return TFRAttrType::getChecked(loc, loc.getContext());
   } else {
     parser.emitError(parser.getNameLoc(), "unknown type " + typeNameSpelling);
     return {};

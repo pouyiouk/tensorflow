@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/str_format.h"
+#include "absl/types/optional.h"
 #include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
@@ -32,29 +33,31 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-static NcclAllToAllConfig GetNcclAllToAllConfig(mlir::lmhlo::AllToAllOp op,
-                                                int64 replica_count) {
+/*static*/ NcclAllToAllConfig NcclAllToAllThunk::GetNcclAllToAllConfig(
+    mlir::lmhlo::AllToAllOp op) {
   NcclAllToAllConfig config;
-  config.config = GetNcclCollectiveConfigForMlir(op, replica_count);
+  // FIXME(b/180174349): LMHLO AllToAll incorrectly has use_global_device_ids
+  // attribute and it should be removed.
+  config.config = GetNcclCollectiveConfigForMlir(op, absl::nullopt);
   config.has_split_dimension = op.split_dimension().hasValue();
   return config;
 }
 
 /*static*/ bool NcclAllToAllThunk::CanImplement(mlir::lmhlo::AllToAllOp op) {
-  bool operands_are_supported =
-      absl::c_all_of(op.operands(), [](mlir::Value operand) {
-        Shape shape = TypeToShape(operand.getType());
-        return LayoutUtil::IsDenseArray(shape) &&
-               IsTypeSupportedByNccl(shape.element_type());
-      });
-  return op.split_dimension().getValueOr(0) == 0 && operands_are_supported;
+  return absl::c_all_of(op.operands(), [&op](mlir::Value operand) {
+    Shape shape = TypeToShape(operand.getType());
+    return LayoutUtil::IsDenseArray(shape) &&
+           IsTypeSupportedByNccl(shape.element_type()) &&
+           (!op.split_dimension() ||
+            LayoutUtil::MinorToMajor(shape).back() == *op.split_dimension());
+  });
 }
 
 NcclAllToAllThunk::NcclAllToAllThunk(
-    ThunkInfo thunk_info, mlir::lmhlo::AllToAllOp op, int64 replica_count,
+    ThunkInfo thunk_info, mlir::lmhlo::AllToAllOp op,
     std::vector<NcclAllToAllThunk::Buffer> buffers)
     : NcclCollectiveThunk(Thunk::kNcclAllToAll, thunk_info),
-      config_(GetNcclAllToAllConfig(op, replica_count)),
+      config_(GetNcclAllToAllConfig(op)),
       buffers_(std::move(buffers)) {
   CHECK_EQ(config_.config.operand_count, buffers_.size());
 }

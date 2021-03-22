@@ -60,7 +60,6 @@ from tensorflow.python.keras.saving.saved_model import json_utils
 from tensorflow.python.keras.saving.saved_model import model_serialization
 from tensorflow.python.keras.utils import generic_utils
 from tensorflow.python.keras.utils import layer_utils
-from tensorflow.python.keras.utils import tf_inspect
 from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.keras.utils import version_utils
 from tensorflow.python.keras.utils.io_utils import ask_to_proceed_with_overwrite
@@ -569,6 +568,11 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         if not steps_per_execution:
           steps_per_execution = kwargs.pop('experimental_steps_per_execution')
 
+      # When compiling from an already-serialized model, we do not want to
+      # reapply some processing steps (e.g. metric renaming for multi-output
+      # models, which have prefixes added for each corresponding output name).
+      from_serialized = kwargs.pop('from_serialized', False)
+
       self._validate_compile(optimizer, metrics, **kwargs)
       self._run_eagerly = run_eagerly
 
@@ -576,7 +580,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       self.compiled_loss = compile_utils.LossesContainer(
           loss, loss_weights, output_names=self.output_names)
       self.compiled_metrics = compile_utils.MetricsContainer(
-          metrics, weighted_metrics, output_names=self.output_names)
+          metrics, weighted_metrics, output_names=self.output_names,
+          from_serialized=from_serialized)
 
       self._configure_steps_per_execution(steps_per_execution or 1)
 
@@ -953,13 +958,11 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
             noise and dropout.
             `validation_data` will override `validation_split`.
             `validation_data` could be:
-              - tuple `(x_val, y_val)` of Numpy arrays or tensors
-              - tuple `(x_val, y_val, val_sample_weights)` of Numpy arrays
-              - dataset
-            For the first two cases, `batch_size` must be provided.
-            For the last case, `validation_steps` could be provided.
-            Note that `validation_data` does not support all the data types that
-            are supported in `x`, eg, dict, generator or `keras.utils.Sequence`.
+              - A tuple `(x_val, y_val)` of Numpy arrays or tensors.
+              - A tuple `(x_val, y_val, val_sample_weights)` of NumPy arrays.
+              - A `tf.data.Dataset`.
+              - A Python generator or `keras.utils.Sequence` returning
+              `(inputs, targets)` or `(inputs, targets, sample_weights)`.
         shuffle: Boolean (whether to shuffle the training data
             before each epoch) or str (for 'batch'). This argument is ignored
             when `x` is a generator or an object of tf.data.Dataset.
@@ -1028,8 +1031,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         workers: Integer. Used for generator or `keras.utils.Sequence` input
             only. Maximum number of processes to spin up
             when using process-based threading. If unspecified, `workers`
-            will default to 1. If 0, will execute the generator on the main
-            thread.
+            will default to 1.
         use_multiprocessing: Boolean. Used for generator or
             `keras.utils.Sequence` input only. If `True`, use process-based
             threading. If unspecified, `use_multiprocessing` will default to
@@ -1167,7 +1169,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         if validation_data and self._should_eval(epoch, validation_freq):
           # Create data_handler for evaluation and cache it.
           if getattr(self, '_eval_data_handler', None) is None:
-            self._fit_frame = tf_inspect.currentframe()
             self._eval_data_handler = data_adapter.get_data_handler(
                 x=val_x,
                 y=val_y,
@@ -1191,7 +1192,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
               max_queue_size=max_queue_size,
               workers=workers,
               use_multiprocessing=use_multiprocessing,
-              return_dict=True)
+              return_dict=True,
+              _use_cached_eval_dataset=True)
           val_logs = {'val_' + name: val for name, val in val_logs.items()}
           epoch_logs.update(val_logs)
 
@@ -1203,7 +1205,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       # If eval data_hanlder exists, delete it after all epochs are done.
       if getattr(self, '_eval_data_handler', None) is not None:
         del self._eval_data_handler
-        del self._fit_frame
       callbacks.on_train_end(logs=training_logs)
       return self.history
 
@@ -1311,7 +1312,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                max_queue_size=10,
                workers=1,
                use_multiprocessing=False,
-               return_dict=False):
+               return_dict=False,
+               **kwargs):
     """Returns the loss value & metrics values for the model in test mode.
 
     Computation is done in batches (see the `batch_size` arg.)
@@ -1365,8 +1367,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           `max_queue_size` will default to 10.
         workers: Integer. Used for generator or `keras.utils.Sequence` input
           only. Maximum number of processes to spin up when using process-based
-          threading. If unspecified, `workers` will default to 1. If 0, will
-          execute the generator on the main thread.
+          threading. If unspecified, `workers` will default to 1.
         use_multiprocessing: Boolean. Used for generator or
           `keras.utils.Sequence` input only. If `True`, use process-based
           threading. If unspecified, `use_multiprocessing` will default to
@@ -1376,6 +1377,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         return_dict: If `True`, loss and metric results are returned as a dict,
           with each key being the name of the metric. If `False`, they are
           returned as a list.
+        **kwargs: Unused at this time.
 
     See the discussion of `Unpacking behavior for iterator-like inputs` for
     `Model.fit`.
@@ -1395,6 +1397,9 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     self._assert_compile_was_called()
     self._check_call_args('evaluate')
     _disallow_inside_tf_function('evaluate')
+    use_cached_eval_dataset = kwargs.pop('_use_cached_eval_dataset', False)
+    if kwargs:
+      raise TypeError('Invalid keyword arguments: %s' % (kwargs,))
 
     if self.distribute_strategy._should_use_with_coordinator:  # pylint: disable=protected-access
       raise NotImplementedError('`model.evaluate` is not yet supported with '
@@ -1402,8 +1407,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     with self.distribute_strategy.scope():
       # Use cached evaluation data only when it's called in `Model.fit`
-      if (getattr(self, '_fit_frame', None) is not None
-          and tf_inspect.currentframe().f_back is self._fit_frame
+      if (use_cached_eval_dataset
           and getattr(self, '_eval_data_handler', None) is not None):
         data_handler = self._eval_data_handler
       else:
@@ -1607,7 +1611,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         workers: Integer. Used for generator or `keras.utils.Sequence` input
             only. Maximum number of processes to spin up when using
             process-based threading. If unspecified, `workers` will default
-            to 1. If 0, will execute the generator on the main thread.
+            to 1.
         use_multiprocessing: Boolean. Used for generator or
             `keras.utils.Sequence` input only. If `True`, use process-based
             threading. If unspecified, `use_multiprocessing` will default to
@@ -1727,7 +1731,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     """
     for m in self.metrics:
-      m.reset_states()
+      m.reset_state()
 
   def train_on_batch(self,
                      x,
@@ -2312,11 +2316,20 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
   @classmethod
   def from_config(cls, config, custom_objects=None):
-    # Since only FunctionalModel produces config, the model can only
-    # be constructed for FunctionalModel
+    # `from_config` assumes `cls` is either `Functional` or a child class of
+    # `Functional`. In the case that `cls` is meant to behave like a child class
+    # of `Functional` but only inherits from the `Model` class, we have to call
+    # `cls(...)` instead of `Functional.from_config`.
     from tensorflow.python.keras.engine import functional  # pylint: disable=g-import-not-at-top
-    return functional.Functional.from_config(
-        config, custom_objects=custom_objects)
+    with generic_utils.SharedObjectLoadingScope():
+      input_tensors, output_tensors, created_layers = (
+          functional.reconstruct_from_config(config, custom_objects))
+      # Initialize a model belonging to `cls`, which can be user-defined or
+      # `Functional`.
+      model = cls(inputs=input_tensors, outputs=output_tensors,
+                  name=config.get('name'))
+      functional.connect_ancillary_layers(model, created_layers)
+      return model
 
   def to_json(self, **kwargs):
     """Returns a JSON string containing the network configuration.

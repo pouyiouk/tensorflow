@@ -33,12 +33,13 @@ limitations under the License.
 #define DEBUG_TYPE PASS_NAME
 
 namespace mlir {
-
 namespace tosa {
-
 namespace {
+#define GEN_PASS_CLASSES
+#include "tensorflow/compiler/mlir/tosa/transforms/passes.h.inc"
+
 // Performs lowering to TOSA dialect
-class LegalizeTF : public PassWrapper<LegalizeTF, FunctionPass> {
+class LegalizeTF : public TosaLegalizeTFPassBase<LegalizeTF> {
  public:
   explicit LegalizeTF() {}
   void runOnFunction() override;
@@ -2117,7 +2118,7 @@ void LegalizeTF::runOnFunction() {
 
 }  // anonymous namespace
 
-// Creates an instance of the TensorFlow Lite dialect LegalizeTF pass.
+// Creates an instance of the TensorFlow dialect LegalizeTF pass.
 std::unique_ptr<OperationPass<FuncOp>> createLegalizeTFPass() {
   return std::make_unique<LegalizeTF>();
 }

@@ -156,7 +156,7 @@ class TPUEmbedding(tracking.AutoTrackable):
       strategy.distribute_datasets_from_function(
           dataset_fn=...,
           options=tf.distribute.InputOptions(
-              experimental_prefetch_to_device=False))
+              experimental_fetch_to_device=False))
   dataset_iterator = iter(distributed_dataset)
   ```
 
@@ -341,6 +341,7 @@ class TPUEmbedding(tracking.AutoTrackable):
       self._hosts = get_list_of_hosts(self._strategy)
 
     self._built = False
+    self._verify_batch_size_on_enqueue = True
 
   def build(self, per_replica_batch_size: Optional[int] = None):
     """Create the underlying variables and initializes the TPU for embeddings.
@@ -592,7 +593,7 @@ class TPUEmbedding(tracking.AutoTrackable):
         strategy.distribute_datasets_from_function(
             dataset_fn=...,
             options=tf.distribute.InputOptions(
-                experimental_prefetch_to_device=False))
+                experimental_fetch_to_device=False))
     dataset_iterator = iter(distributed_dataset)
 
     @tf.function
@@ -689,7 +690,7 @@ class TPUEmbedding(tracking.AutoTrackable):
         strategy.distribute_datasets_from_function(
             dataset_fn=...,
             options=tf.distribute.InputOptions(
-                experimental_prefetch_to_device=False))
+                experimental_fetch_to_device=False))
     dataset_iterator = iter(distributed_dataset)
 
     @tf.function
@@ -1102,10 +1103,9 @@ class TPUEmbedding(tracking.AutoTrackable):
             "Received input tensor {} which is on a TPU input device {}. Input "
             "tensors for TPU embeddings must be placed on the CPU. Please "
             "ensure that your dataset is prefetching tensors to the host by "
-            "setting the 'experimental_prefetch_to_device' option of the "
+            "setting the 'experimental_fetch_to_device' option of the "
             "dataset distribution function. See the documentation of the "
-            "enqueue method for an example.".format(
-                path, device_string))
+            "enqueue method for an example.".format(path, device_string))
 
     # expand_composites here is important, we need to check the device of each
     # underlying tensor.
@@ -1145,7 +1145,7 @@ class TPUEmbedding(tracking.AutoTrackable):
         strategy.distribute_datasets_from_function(
             dataset_fn=...,
             options=tf.distribute.InputOptions(
-                experimental_prefetch_to_device=False))
+                experimental_fetch_to_device=False))
     dataset_iterator = iter(distributed_dataset)
 
     @tf.function
@@ -1233,20 +1233,27 @@ class TPUEmbedding(tracking.AutoTrackable):
 
     in_tpu_context = self._raise_error_for_incorrect_control_flow_context()
 
-    # Should we also get batch_size from weights if they exist?
-    # Since features is assumed to be batched at the per replica batch size
-    # the returned batch size here is per replica an not global.
-    batch_size = self._get_batch_size(features, in_tpu_context)
-    if batch_size is None and not self._built:
-      raise RuntimeError("Unable to determine batch size from input features."
-                         "Please call build() with global batch size to "
-                         "initialize the TPU for embeddings.")
-    if batch_size is not None:
-      self._maybe_build(batch_size)
-      if self._batch_size != batch_size:
-        raise ValueError("Multiple calls to enqueue with different batch sizes "
-                         "{} and {}.".format(self._batch_size,
-                                             batch_size))
+    if not self._verify_batch_size_on_enqueue:
+      if not self._batch_size or not self._built:
+        raise ValueError(
+            "Configured not to check batch size on each enqueue() call; please "
+            "ensure build() was called with global batch size to initialize "
+            "the TPU for embeddings.")
+    else:
+      # Should we also get batch_size from weights if they exist?
+      # Since features is assumed to be batched at the per replica batch size
+      # the returned batch size here is per replica an not global.
+      batch_size = self._get_batch_size(features, in_tpu_context)
+      if batch_size is None and not self._built:
+        raise RuntimeError("Unable to determine batch size from input features."
+                           "Please call build() with global batch size to "
+                           "initialize the TPU for embeddings.")
+      if batch_size is not None:
+        self._maybe_build(batch_size)
+        if self._batch_size != batch_size:
+          raise ValueError("Multiple calls to enqueue with different batch "
+                           "sizes {} and {}.".format(self._batch_size,
+                                                     batch_size))
 
     nest.assert_same_structure(self._feature_config, features)
 
@@ -1603,7 +1610,7 @@ def cpu_embedding_lookup(inputs, weights, tables, feature_config):
     elif isinstance(inp, sparse_tensor.SparseTensor):
       if feature.max_sequence_length > 0:
         batch_size = math_ops.cast(array_ops.shape(inp)[0], dtype=dtypes.int64)
-        sparse_shape = array_ops.concat(
+        sparse_shape = array_ops.stack(
             [batch_size, feature.max_sequence_length], axis=0)
         # TPU Embedding truncates sequences to max_sequence_length, and if we
         # don't truncate, scatter_nd will error out if the index was out of
@@ -1611,7 +1618,7 @@ def cpu_embedding_lookup(inputs, weights, tables, feature_config):
         truncated_inp = sparse_ops.sparse_slice(inp, start=[0, 0],
                                                 size=sparse_shape)
 
-        dense_output_shape = array_ops.concat(
+        dense_output_shape = array_ops.stack(
             [batch_size, feature.max_sequence_length, feature.table.dim],
             axis=0)
         outputs.append(

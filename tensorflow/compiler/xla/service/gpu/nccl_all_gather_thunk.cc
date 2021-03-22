@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/str_format.h"
+#include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
 #include "tensorflow/compiler/xla/util.h"
@@ -30,39 +31,28 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-static NcclAllGatherConfig GetNcclAllGatherConfig(mlir::lmhlo::AllGatherOp op,
-                                                  int64 replica_count) {
+/*static*/ NcclAllGatherConfig NcclAllGatherThunk::GetNcclAllGatherConfig(
+    mlir::lmhlo::AllGatherOp op) {
   NcclAllGatherConfig config;
-  config.config = GetNcclCollectiveConfigForMlir(op, replica_count);
+  config.config =
+      GetNcclCollectiveConfigForMlir(op, op.use_global_device_ids());
   return config;
 }
 
-/*static*/ bool NcclAllGatherThunk::CanImplement(const HloInstruction* hlo) {
-  auto operands_are_supported = [hlo]() {
-    return absl::c_all_of(hlo->operands(), [](HloInstruction* operand) {
-      return LayoutUtil::IsDenseArray(operand->shape()) &&
-             IsTypeSupportedByNccl(operand->shape().element_type());
-    });
-  };
-  return (Cast<HloAllGatherInstruction>(hlo)->all_gather_dimension() == 0) &&
-         operands_are_supported();
-}
-
 /*static*/ bool NcclAllGatherThunk::CanImplement(mlir::lmhlo::AllGatherOp op) {
-  bool operands_are_supported =
-      absl::c_all_of(op.operands(), [](mlir::Value operand) {
-        Shape shape = TypeToShape(operand.getType());
-        return LayoutUtil::IsDenseArray(shape) &&
-               IsTypeSupportedByNccl(shape.element_type());
-      });
-  return op.all_gather_dimension() == 0 && operands_are_supported;
+  return absl::c_all_of(op.operands(), [&](mlir::Value operand) {
+    Shape shape = TypeToShape(operand.getType());
+    return LayoutUtil::IsDenseArray(shape) &&
+           IsTypeSupportedByNccl(shape.element_type()) &&
+           LayoutUtil::MinorToMajor(shape).back() == op.all_gather_dimension();
+  });
 }
 
 NcclAllGatherThunk::NcclAllGatherThunk(
-    ThunkInfo thunk_info, mlir::lmhlo::AllGatherOp op, int64 replica_count,
+    ThunkInfo thunk_info, mlir::lmhlo::AllGatherOp op,
     std::vector<NcclAllGatherThunk::Buffer> buffers)
     : NcclCollectiveThunk(Thunk::kNcclAllGather, thunk_info),
-      config_(GetNcclAllGatherConfig(op, replica_count)),
+      config_(GetNcclAllGatherConfig(op)),
       buffers_(std::move(buffers)) {
   CHECK_EQ(config_.config.operand_count, buffers_.size());
 }
