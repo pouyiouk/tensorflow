@@ -14,9 +14,6 @@
 # ==============================================================================
 """Utilities for testing multi-worker distribution strategies with Keras."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 from tensorflow.python import keras
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.distribute import multi_worker_test_base
@@ -81,7 +78,4 @@ def get_mnist_model(input_shape):
 def make_parameter_server_cluster(num_workers, num_ps):
   cluster_def = multi_worker_test_base.create_in_process_cluster(
       num_workers=num_workers, num_ps=num_ps, rpc_layer="grpc")
-  cluster_def["chief"] = [
-      "localhost:%d" % multi_worker_test_base.pick_unused_port()
-  ]
   return SimpleClusterResolver(ClusterSpec(cluster_def), rpc_layer="grpc")

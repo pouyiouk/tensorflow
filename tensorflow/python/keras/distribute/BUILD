@@ -14,7 +14,7 @@ package(
         "//tensorflow/python/keras:__subpackages__",
         "//tensorflow/tools/pip_package:__pkg__",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 filegroup(
@@ -690,7 +690,6 @@ cuda_py_test(
     python_version = "PY3",
     tags = [
         "multi_and_single_gpu",
-        "no_tfrt",  # TODO(b/179839466): Reenable TFRT after the issue is resolved.
         "no_windows_gpu",  # TODO(b/130551176)
     ],
     deps = [
@@ -740,7 +739,6 @@ cuda_py_test(
     tags = [
         "multi_and_single_gpu",
         "no_oss",  # TODO(b/130369494): Investigate why it times out on OSS.
-        "no_tfrt",  # TODO(b/179839466): Reenable TFRT after the issue is resolved.
     ],
     deps = [
         ":multi_worker_testing_utils",
@@ -856,13 +854,13 @@ distribute_py_test(
     ],
 )
 
-tf_py_test(
+distribute_py_test(
     name = "parameter_server_training_test",
     srcs = ["parameter_server_training_test.py"],
     python_version = "PY3",
-    shard_count = 1,
+    shard_count = 4,  # TODO(b/184290570): Investigate why only 1 shard times out.
     tags = [
-        "no_tfrt",  # TODO(b/180537361): Reenable TFRT after the issue is resolved.
+        "multi_and_single_gpu",
     ],
     deps = [
         ":multi_worker_testing_utils",
@@ -898,7 +896,8 @@ distribute_py_test(
     shard_count = 50,
     tags = [
         "multi_gpu",
-        "no_tfrt",  # TODO(b/180537361): Reenable TFRT after the issue is resolved.
+        "no_oss",  # TODO(b/183640564): Reenable
+        "notsan",  # TODO(b/184542721)
     ],
     deps = [
         ":multi_worker_testing_utils",

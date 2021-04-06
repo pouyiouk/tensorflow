@@ -5,7 +5,7 @@ load(
 
 package(
     features = ["-layering_check"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 config_setting(
@@ -266,16 +266,18 @@ cc_library(
         "circular_buffer.cc",
         "comparisons.cc",
         "concatenation.cc",
+        "cumsum.cc",
         "dequantize.cc",
         "detection_postprocess.cc",
-        "div.cc",
         "elementwise.cc",
         "elu.cc",
         "exp.cc",
         "expand_dims.cc",
         "fill.cc",
         "floor.cc",
+        "floor_div.cc",
         "l2norm.cc",
+        "l2_pool_2d.cc",
         "leaky_relu.cc",
         "logical.cc",
         "logistic.cc",
@@ -538,6 +540,21 @@ cc_test(
 )
 
 cc_test(
+    name = "cumsum_test",
+    srcs = [
+        "cumsum_test.cc",
+    ],
+    deps = [
+        ":kernel_runner",
+        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/micro:debug_log",
+        "//tensorflow/lite/micro:op_resolvers",
+        "//tensorflow/lite/micro:test_helpers",
+        "//tensorflow/lite/micro/testing:micro_test",
+    ],
+)
+
+cc_test(
     name = "depthwise_conv_test",
     srcs = [
         "depthwise_conv_test.cc",
@@ -577,19 +594,6 @@ cc_test(
         "//tensorflow/lite/micro:test_helpers",
         "//tensorflow/lite/micro/testing:micro_test",
         "@flatbuffers",
-    ],
-)
-
-cc_test(
-    name = "div_test",
-    srcs = ["div_test.cc"],
-    deps = [
-        ":kernel_runner",
-        "//tensorflow/lite/c:common",
-        "//tensorflow/lite/micro:debug_log",
-        "//tensorflow/lite/micro:op_resolvers",
-        "//tensorflow/lite/micro:test_helpers",
-        "//tensorflow/lite/micro/testing:micro_test",
     ],
 )
 
@@ -662,6 +666,19 @@ cc_test(
 )
 
 cc_test(
+    name = "floor_div_test",
+    srcs = ["floor_div_test.cc"],
+    deps = [
+        ":kernel_runner",
+        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/micro:debug_log",
+        "//tensorflow/lite/micro:op_resolvers",
+        "//tensorflow/lite/micro:test_helpers",
+        "//tensorflow/lite/micro/testing:micro_test",
+    ],
+)
+
+cc_test(
     name = "floor_test",
     srcs = [
         "floor_test.cc",
@@ -710,6 +727,21 @@ cc_test(
     deps = [
         ":kernel_runner",
         "//tensorflow/lite/c:common",
+        "//tensorflow/lite/micro:op_resolvers",
+        "//tensorflow/lite/micro:test_helpers",
+        "//tensorflow/lite/micro/testing:micro_test",
+    ],
+)
+
+cc_test(
+    name = "l2_pool_2d_test",
+    srcs = [
+        "l2_pool_2d_test.cc",
+    ],
+    deps = [
+        ":kernel_runner",
+        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/micro:debug_log",
         "//tensorflow/lite/micro:op_resolvers",
         "//tensorflow/lite/micro:test_helpers",
         "//tensorflow/lite/micro/testing:micro_test",
