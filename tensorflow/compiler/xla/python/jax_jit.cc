@@ -36,6 +36,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/synchronization/notification.h"
 #include "absl/types/optional.h"
 #include "pybind11/cast.h"
@@ -64,7 +65,6 @@ namespace py = pybind11;
 
 // TODO(phawkins): Add support for Tracers.
 // TODO(jblespiau): Use absl Status.
-// TODO(jblespiau): Remove the "xla::" prefixes when not needed.
 
 namespace {
 
@@ -115,15 +115,6 @@ bool JitIsDisabled() {
   return thread_local_state.disable_jit.value_or(global_state.disable_jit);
 }
 
-py::object ExtraJitContext() {
-  return thread_local_state.extra_jit_context.value_or(
-      global_state.extra_jit_context);
-}
-
-absl::optional<py::object> PostHook() {
-  return thread_local_state.post_hook.has_value() ? thread_local_state.post_hook
-                                                  : global_state.post_hook;
-}
 }  // namespace
 
 bool GetEnableX64() {
@@ -131,47 +122,34 @@ bool GetEnableX64() {
 }
 
 std::string CallSignature::DebugString() const {
-  std::vector<std::string> static_args_str;
-  static_args_str.reserve(static_args.size());
-  for (auto& static_arg : static_args) {
-    static_args_str.emplace_back(py::cast<std::string>(py::str(static_arg)));
-  }
-
-  std::vector<std::string> signature_str;
-  signature_str.reserve(dynamic_args_signatures.size());
-
-  for (auto& arg_signature : dynamic_args_signatures) {
-    signature_str.emplace_back(arg_signature.DebugString());
-  }
-  std::vector<std::string> tree_def_str;
-  signature_str.reserve(dynamic_positional_args_treedef.size());
-  for (auto& tree_def : dynamic_positional_args_treedef) {
-    tree_def_str.emplace_back(tree_def.ToString());
-  }
-  std::vector<std::string> keyword_names;
-  keyword_names.reserve(keyword_args.size());
-  for (auto& kwarg_entry : keyword_args) {
-    keyword_names.emplace_back(py::cast<std::string>(kwarg_entry.key));
-    tree_def_str.emplace_back(kwarg_entry.value_treedef.ToString());
-  }
-  return absl::StrCat(
-      static_args.size(), " static_args: ", absl::StrJoin(static_args_str, ","),
-      "\n",  // new line
-      keyword_args.size(), " keyword args:", absl::StrJoin(keyword_names, ","),
-      "\n",  // new-line
-      dynamic_positional_args_treedef.size(), " positional args.\n",
-      dynamic_args_signatures.size(),
-      " dynamic args (positional+keyword):\n   - ",
-      absl::StrJoin(signature_str, ", "), "\n   - ",
-      absl::StrJoin(tree_def_str, " | "));
+  auto py_object_formatter = [](std::string* out, const py::object& o) {
+    out->append(py::cast<std::string>(o));
+  };
+  auto treedef_formatter = [](std::string* out, const xla::PyTreeDef& d) {
+    out->append(d.ToString());
+  };
+  auto signature_formatter = [](std::string* out,
+                                const xla::PyArgSignature& s) {
+    out->append(s.DebugString());
+  };
+  return absl::StrFormat(
+      "static args (positional + keyword): %s\nstatic arg keyword names: %s\n"
+      "dynamic arg signatures (positional + keyword): %s\n"
+      "dynamic arg keyword names: %s\ndynamic arg treedefs: %s\n",
+      absl::StrJoin(static_args, ",", py_object_formatter),
+      absl::StrJoin(static_arg_names, ",", py_object_formatter),
+      absl::StrJoin(dynamic_arg_signatures, ", ", signature_formatter),
+      absl::StrJoin(dynamic_arg_names, ",", py_object_formatter),
+      absl::StrJoin(dynamic_arg_treedefs, "| ", treedef_formatter));
 }
 
 bool CallSignature::operator==(const CallSignature& other) const {
-  return std::tie(dynamic_positional_args_treedef, keyword_args,
-                  dynamic_args_signatures, device, jax_enable_x64) ==
-             std::tie(other.dynamic_positional_args_treedef, other.keyword_args,
-                      other.dynamic_args_signatures, other.device,
-                      other.jax_enable_x64) &&
+  return std::tie(dynamic_arg_treedefs, dynamic_arg_names,
+                  dynamic_arg_signatures, device, jax_enable_x64,
+                  static_arg_names) ==
+             std::tie(other.dynamic_arg_treedefs, other.dynamic_arg_names,
+                      other.dynamic_arg_signatures, other.device,
+                      other.jax_enable_x64, static_arg_names) &&
          // `==` on py:objects is the Python `is`. We need equal.
          std::equal(
              static_args.begin(), static_args.end(), other.static_args.begin(),
@@ -194,15 +172,13 @@ bool CallSignature::operator==(const CallSignature& other) const {
 
 template <typename H>
 H AbslHashValue(H h, const CallSignature& s) {
-  h = H::combine_contiguous(std::move(h),
-                            s.dynamic_positional_args_treedef.data(),
-                            s.dynamic_positional_args_treedef.size());
-  h = H::combine_contiguous(std::move(h), s.keyword_args.data(),
-                            s.keyword_args.size());
-  h = H::combine_contiguous(std::move(h), s.dynamic_args_signatures.data(),
-                            s.dynamic_args_signatures.size());
-  h = H::combine(std::move(h), s.device);
-  h = H::combine(std::move(h), s.jax_enable_x64);
+  h = H::combine_contiguous(std::move(h), s.dynamic_arg_treedefs.data(),
+                            s.dynamic_arg_treedefs.size());
+  for (const auto& name : s.dynamic_arg_names) {
+    h = H::combine(std::move(h), name.ptr());
+  }
+  h = H::combine_contiguous(std::move(h), s.dynamic_arg_signatures.data(),
+                            s.dynamic_arg_signatures.size());
   for (const auto& static_arg : s.static_args) {
     ssize_t hash;
     try {
@@ -217,6 +193,12 @@ H AbslHashValue(H h, const CallSignature& s) {
     }
     h = H::combine(std::move(h), hash);
   }
+  for (const auto& name : s.static_arg_names) {
+    h = H::combine(std::move(h), name.ptr());
+  }
+  h = H::combine(std::move(h), s.device);
+  h = H::combine(std::move(h), s.jax_enable_x64);
+
   // We do not hash extra_jit_context since its current hash function costs
   // ~300ns and we don't expect a large number of different contexts.
   return h;
@@ -224,31 +206,48 @@ H AbslHashValue(H h, const CallSignature& s) {
 
 // Filter out static arguments, flatten and concatenate other arguments (i.e.
 // dynamic positional and keyword arguments), filling `arguments` in place.
-xla::Status ParseArguments(const py::args& args,
+xla::Status ParseArguments(py::handle args,
                            const absl::optional<py::kwargs>& py_kwargs,
                            absl::Span<int const> static_argnums,
+                           absl::Span<py::str const> static_argnames,
                            ParsedArgumentsAsBuffers& arguments) {
   tensorflow::profiler::TraceMe traceme("ParseArguments");
-  if (static_argnums.size() > args.size()) {
+  int num_args = PyTuple_GET_SIZE(args.ptr());
+  int num_kwargs = py_kwargs ? py_kwargs->size() : 0;
+  if (static_argnums.size() > num_args) {
     return xla::InvalidArgument(
         "%s", "[jaxjit] Error with static argnums, executing the Python path.");
   }
-  int num_kwargs = py_kwargs ? py_kwargs->size() : 0;
-  arguments.flat_dynamic_args.reserve(args.size() + num_kwargs -
-                                      static_argnums.size());
-  arguments.signature.dynamic_positional_args_treedef.reserve(
-      args.size() - static_argnums.size());
 
-  // Positional arguments.
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (std::find(static_argnums.begin(), static_argnums.end(), i) ==
-        static_argnums.end()) {
-      xla::PyTreeDef pytree_def;
-      pytree_def.FlattenInto(args[i], arguments.flat_dynamic_args);
-      arguments.signature.dynamic_positional_args_treedef.push_back(pytree_def);
-    } else {
-      arguments.signature.static_args.emplace_back(
-          py::reinterpret_borrow<py::object>(args[i]));
+  arguments.flat_dynamic_args.reserve(num_args + num_kwargs -
+                                      static_argnums.size());
+  if (static_argnums.empty()) {
+    arguments.signature.dynamic_arg_treedefs.resize(num_args);
+
+    // Positional arguments.
+    for (int i = 0; i < num_args; ++i) {
+      xla::PyTreeDef& pytree_def = arguments.signature.dynamic_arg_treedefs[i];
+      pytree_def.FlattenInto(PyTuple_GET_ITEM(args.ptr(), i),
+                             arguments.flat_dynamic_args);
+    }
+  } else {
+    arguments.signature.dynamic_arg_treedefs.reserve(num_args -
+                                                     static_argnums.size());
+
+    // Positional arguments.
+    for (int i = 0; i < num_args; ++i) {
+      if (std::find(static_argnums.begin(), static_argnums.end(), i) ==
+          static_argnums.end()) {
+        arguments.signature.dynamic_arg_treedefs.emplace_back();
+        xla::PyTreeDef& pytree_def =
+            arguments.signature.dynamic_arg_treedefs.back();
+        pytree_def.FlattenInto(PyTuple_GET_ITEM(args.ptr(), i),
+                               arguments.flat_dynamic_args);
+      } else {
+        arguments.signature.static_args.emplace_back(
+            py::reinterpret_borrow<py::object>(
+                PyTuple_GET_ITEM(args.ptr(), i)));
+      }
     }
   }
 
@@ -260,16 +259,11 @@ xla::Status ParseArguments(const py::args& args,
     // (see also xla::PyTreeDef::Flatten) and then create the signatures.
     // TODO(jblespiau): We should be able to sort the keys by interned-key
     // pointers, but this requires the Python compilation to do the same.
-    arguments.signature.keyword_args.resize(kwargs.size());
-    for (size_t i = 0; i < kwargs.size(); ++i) {
+    for (int i = 0; i < num_kwargs; ++i) {
       // Intern the key if not already interned.
+      kwargs[i].first.inc_ref();
       if (!PyUnicode_CHECK_INTERNED(kwargs[i].first.ptr())) {
-        PyObject* key = kwargs[i].first.ptr();
-        kwargs[i].first.inc_ref();
-        PyUnicode_InternInPlace(&key);
-        arguments.keep_alive_objects.push_back(
-            py::reinterpret_steal<py::object>(key));
-        kwargs[i].first = py::handle(key);
+        PyUnicode_InternInPlace(&kwargs[i].first.ptr());
       }
     }
 
@@ -278,10 +272,28 @@ xla::Status ParseArguments(const py::args& args,
                  const std::pair<py::handle, py::handle>& b) {
                 return a.first < b.first;
               });
-    for (size_t i = 0; i < kwargs.size(); ++i) {
-      arguments.signature.keyword_args[i].key = kwargs[i].first;
-      arguments.signature.keyword_args[i].value_treedef.FlattenInto(
-          kwargs[i].second, arguments.flat_dynamic_args);
+    auto kwarg_is_static = [&](py::handle name) {
+      for (const auto& kw : static_argnames) {
+        if (kw.ptr() == name.ptr()) return true;
+      }
+      return false;
+    };
+
+    arguments.signature.dynamic_arg_names.reserve(num_kwargs);
+    for (int i = 0; i < num_kwargs; ++i) {
+      if (kwarg_is_static(kwargs[i].first)) {
+        arguments.signature.static_arg_names.push_back(
+            py::reinterpret_steal<py::object>(kwargs[i].first));
+        arguments.signature.static_args.push_back(
+            py::reinterpret_borrow<py::object>(kwargs[i].second));
+      } else {
+        arguments.signature.dynamic_arg_names.push_back(
+            py::reinterpret_steal<py::object>(kwargs[i].first));
+        arguments.signature.dynamic_arg_treedefs.emplace_back();
+        xla::PyTreeDef& pytree_def =
+            arguments.signature.dynamic_arg_treedefs.back();
+        pytree_def.FlattenInto(kwargs[i].second, arguments.flat_dynamic_args);
+      }
     }
   }
   return xla::Status::OK();
@@ -326,7 +338,7 @@ class CompiledFunction {
  public:
   CompiledFunction(py::function fun, py::function cache_miss,
                    py::function get_device, std::vector<int> static_argnums,
-                   int cache_size);
+                   std::vector<py::str> static_argnames, int cache_size);
   ~CompiledFunction();
 
   // This function will:
@@ -335,7 +347,7 @@ class CompiledFunction {
   // (c) call the executable
   // (d) construct `DeviceArray` objects from the outputs
   // (e) reconstruct the `PyTree`.
-  xla::StatusOr<py::object> Call(py::args args,
+  xla::StatusOr<py::object> Call(py::handle args,
                                  absl::optional<py::kwargs> kwargs);
 
   // This allows `inspect.signature(cpp_jitted_f)` from Python.
@@ -352,6 +364,10 @@ class CompiledFunction {
   py::handle AsPyHandle();
 
  private:
+  // Attempts to populate default_device_. May release the GIL; is
+  // reentrant-safe.
+  void TryToPopulateDefaultDevice();
+
   void PopulateCacheEntry(CacheEntry* entry, const CallSignature& signature,
                           const py::tuple& out_and_fastpath_data);
   bool always_fallback_to_python_ = false;
@@ -363,6 +379,8 @@ class CompiledFunction {
   // We need to know the static arguments to remove them from the arguments
   // passed to the underlying PyExecutable. In sorted order.
   std::vector<int> static_argnums_;
+  // Keyword arguments, interned.
+  std::vector<py::str> static_argnames_;
 
   // A function taking no arguments and returning the default device and whether
   // jax.jit has been committed to it.
@@ -388,13 +406,18 @@ class CompiledFunction {
 CompiledFunction::CompiledFunction(py::function fun, py::function cache_miss,
                                    py::function get_device,
                                    std::vector<int> static_argnums,
+                                   std::vector<py::str> static_argnames,
                                    int cache_size)
     : fun_(std::move(fun)),
       cache_miss_(std::move(cache_miss)),
       static_argnums_(std::move(static_argnums)),
+      static_argnames_(std::move(static_argnames)),
       get_device_(std::move(get_device)),
       executables_(cache_size) {
   std::sort(static_argnums_.begin(), static_argnums_.end());
+  for (py::str& s : static_argnames) {
+    PyUnicode_InternInPlace(&s.ptr());
+  }
 }
 
 CompiledFunction::~CompiledFunction() = default;
@@ -413,9 +436,6 @@ xla::Status ConvertArgsToBuffers(bool jax_enable_x64, xla::PyClient& pyclient,
   auto& keep_alive = arguments.keep_alive;
 
   int num_flat_dynamic_args = arguments.flat_dynamic_args.size();
-  arg_buffers.reserve(num_flat_dynamic_args);
-  arguments.signature.dynamic_args_signatures.reserve(num_flat_dynamic_args);
-
   struct PythonTypes {
     py::object device_array;
   };
@@ -491,6 +511,8 @@ xla::Status ConvertArgsToBuffers(bool jax_enable_x64, xla::PyClient& pyclient,
   // TODO(phawkins): consider allowing forces here.
   options.force_lazy_arrays = false;
   options.allow_zero_copy = true;
+  arg_buffers.reserve(num_flat_dynamic_args);
+  arguments.signature.dynamic_arg_signatures.reserve(num_flat_dynamic_args);
   for (int i = 0; i < num_flat_dynamic_args; ++i) {
     py::handle arg = arguments.flat_dynamic_args[i];
     TF_ASSIGN_OR_RETURN(xla::DevicePutResult on_device,
@@ -508,7 +530,7 @@ xla::Status ConvertArgsToBuffers(bool jax_enable_x64, xla::PyClient& pyclient,
     xla::PyArgSignature sig(buffer->on_device_shape().element_type(),
                             buffer->on_device_shape().dimensions(),
                             on_device.weak_type);
-    arguments.signature.dynamic_args_signatures.push_back(std::move(sig));
+    arguments.signature.dynamic_arg_signatures.push_back(std::move(sig));
   }
   return xla::Status::OK();
 }
@@ -568,67 +590,85 @@ void CompiledFunction::PopulateCacheEntry(
   cache_entry->ready = true;
 }
 
+void CompiledFunction::TryToPopulateDefaultDevice() {
+  // The following line calls Python and may release the GIL.
+  py::object device_and_is_committed = get_device_();
+  // If the GIL was released by the call to get_device_, another thread may
+  // have filled in default_device_.
+  if (!default_device_) {
+    try {
+      auto default_pydevice = py::cast<xla::ClientAndPtr<xla::PjRtDevice>>(
+          device_and_is_committed.attr("default_device"));
+      is_committed_ =
+          py::cast<bool>(device_and_is_committed.attr("committed_to_device"));
+      default_pyclient_ = default_pydevice.client;
+      default_device_ = default_pydevice.contents;
+    } catch (const py::cast_error& e) {
+      // Pathways, Cloud TPU 2VM, and UPTC runtime.
+      always_fallback_to_python_ = true;
+    }
+  }
+}
+
 xla::StatusOr<py::object> CompiledFunction::Call(
-    py::args args, absl::optional<py::kwargs> kwargs) {
-  if (JitIsDisabled()) {
-    return fun_(*args, **kwargs.value_or(py::kwargs()));
+    py::handle args, absl::optional<py::kwargs> kwargs) {
+  // Make sure we trigger a garbage collection on JIT function calls. Otherwise
+  // code like
+  // f = jit(...)
+  // while True:
+  //   f(x)
+  // may never free temporary buffers for copies of arguments.
+  xla::GlobalPyRefManager()->MaybeCollectGarbage();
+
+  auto& tls = thread_local_state;
+  if (tls.disable_jit.value_or(global_state.disable_jit)) {
+    return fun_(*py::reinterpret_borrow<py::args>(args),
+                **kwargs.value_or(py::kwargs()));
   }
   if (always_fallback_to_python_) {
-    return py::object(py::cast<py::tuple>(
-        cache_miss_(*args, **kwargs.value_or(py::kwargs())))[0]);
+    return py::object(
+        py::cast<py::tuple>(cache_miss_(*py::reinterpret_borrow<py::args>(args),
+                                        **kwargs.value_or(py::kwargs())))[0]);
   }
-  // Delayed values are retrieved on the first call to `Call`.
+
+  // On the first call to `Call`, compute a default device. We need to wait
+  // until after platform initialization is complete before doing so, but @jit
+  // may be used as a decorator.
   if (!default_device_) {
-    // The following line calls Python and may release the GIL.
-    py::object device_and_is_committed = get_device_();
-    // If the GIL was released by the call to get_device_, another thread may
-    // have filled in default_device_.
+    TryToPopulateDefaultDevice();
     if (!default_device_) {
-      try {
-        auto default_pydevice = py::cast<xla::ClientAndPtr<xla::PjRtDevice>>(
-            device_and_is_committed.attr("default_device"));
-        is_committed_ =
-            py::cast<bool>(device_and_is_committed.attr("committed_to_device"));
-        default_pyclient_ = default_pydevice.client;
-        default_device_ = default_pydevice.contents;
-      } catch (const py::cast_error& e) {
-        // Pathways, Cloud TPU 2VM, and UPTC runtime.
-        always_fallback_to_python_ = true;
-      }
-      if (!default_device_) {
-        return py::object(py::cast<py::tuple>(
-            cache_miss_(*args, **kwargs.value_or(py::kwargs())))[0]);
-      }
+      return py::object(py::cast<py::tuple>(
+          cache_miss_(*py::reinterpret_borrow<py::args>(args),
+                      **kwargs.value_or(py::kwargs())))[0]);
     }
   }
 
   ParsedArgumentsAsBuffers arguments;
-  if (!ParseArguments(args, kwargs, static_argnums_, arguments).ok()) {
-    return py::object(py::cast<py::tuple>(
-        cache_miss_(*args, **kwargs.value_or(py::kwargs())))[0]);
+  if (!ParseArguments(args, kwargs, static_argnums_, static_argnames_,
+                      arguments)
+           .ok()) {
+    return py::object(
+        py::cast<py::tuple>(cache_miss_(*py::reinterpret_borrow<py::args>(args),
+                                        **kwargs.value_or(py::kwargs())))[0]);
   }
 
-  bool jax_enable_x64 = GetEnableX64();
+  bool jax_enable_x64 = tls.enable_x64.value_or(global_state.enable_x64);
   arguments.signature.jax_enable_x64 = jax_enable_x64;
   // The C++ jit do not support Tracers arguments inputs yet. The Python-based
   // jit function will be called if any of the dynamic arguments is unsupported.
   if (!ConvertArgsToBuffers(jax_enable_x64, *default_pyclient_, default_device_,
                             is_committed_, arguments)
            .ok()) {
-    return py::object(py::cast<py::tuple>(
-        cache_miss_(*args, **kwargs.value_or(py::kwargs())))[0]);
+    return py::object(
+        py::cast<py::tuple>(cache_miss_(*py::reinterpret_borrow<py::args>(args),
+                                        **kwargs.value_or(py::kwargs())))[0]);
   }
-  arguments.signature.extra_jit_context = ExtraJitContext();
+  arguments.signature.extra_jit_context =
+      tls.extra_jit_context.value_or(global_state.extra_jit_context);
 
   std::shared_ptr<CacheEntry> cache_entry = executables_.GetOrCreateIfAbsent(
-      arguments.signature, [](const CallSignature& key) {
-        auto entry = std::make_shared<CacheEntry>();
-        for (const auto& kw : key.keyword_args) {
-          entry->keepalive.push_back(
-              py::reinterpret_borrow<py::object>(kw.key));
-        }
-        return entry;
-      });
+      arguments.signature,
+      [](const CallSignature& key) { return std::make_shared<CacheEntry>(); });
 
   if (!cache_entry->ready) {
     // Calls Python and may release the GIL. May also throw if
@@ -639,7 +679,8 @@ xla::StatusOr<py::object> CompiledFunction::Call(
     // TODO(phawkins): it may be preferable to force other threads to wait if
     // a cache miss is already happening.
     py::object out_and_fastpath_data =
-        cache_miss_(*args, **kwargs.value_or(py::kwargs()));
+        cache_miss_(*py::reinterpret_borrow<py::args>(args),
+                    **kwargs.value_or(py::kwargs()));
     py::tuple out_tuple = py::cast<py::tuple>(out_and_fastpath_data);
 
     // Another thread might have populated the cache entry while we were calling
@@ -656,42 +697,58 @@ xla::StatusOr<py::object> CompiledFunction::Call(
   }
 
   if (cache_entry->fall_back_to_python) {
-    return py::object(py::cast<py::tuple>(
-        cache_miss_(*args, **kwargs.value_or(py::kwargs())))[0]);
+    return py::object(
+        py::cast<py::tuple>(cache_miss_(*py::reinterpret_borrow<py::args>(args),
+                                        **kwargs.value_or(py::kwargs())))[0]);
   }
-  std::vector<xla::PyBuffer::object> outputs =
-      ValueOrThrow(cache_entry->executable->PjRtExecute(arguments.arg_buffers));
 
-  const std::vector<py::object>& out_lazy_exprs = cache_entry->out_lazy_exprs;
-  xla::PjRtDevice* sticky_device = cache_entry->sticky_device;
+  // Executes the computation.
+  std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> output_buffers;
+  {
+    py::gil_scoped_release gil_release;
+    TF_ASSIGN_OR_RETURN(
+        output_buffers,
+        cache_entry->executable->mutable_pjrt_executable()->Execute(
+            {arguments.arg_buffers}, cache_entry->executable->options()));
+  }
+  auto traceback = xla::Traceback::Get();
 
-  std::vector<py::object> flat_device_arrays;
-  flat_device_arrays.reserve(outputs.size());
-  for (int i = 0; i < outputs.size(); ++i) {
-    auto& buffer = outputs[i];
-    if (out_lazy_exprs[i].is_none()) {  // No LazyExpr.
+  int num_outputs = output_buffers[0].size();
+  absl::InlinedVector<py::object, 1> flat_device_arrays;
+  flat_device_arrays.reserve(num_outputs);
+  for (int i = 0; i < output_buffers[0].size(); ++i) {
+    bool last = (i == (num_outputs - 1));
+    xla::PyBuffer::object buffer = xla::PyBuffer::Make(
+        cache_entry->executable->client(), std::move(output_buffers[0][i]),
+        last ? std::move(traceback) : traceback);
+    if (cache_entry->out_lazy_exprs[i].is_none()) {  // No LazyExpr.
       buffer.buf()->SetAval(cache_entry->out_avals[i]);
       buffer.buf()->set_weak_type(cache_entry->out_weak_types[i]);
-      TF_RETURN_IF_ERROR(buffer.buf()->set_sticky_device(sticky_device));
-      flat_device_arrays.push_back(std::move(outputs[i]));
+      TF_RETURN_IF_ERROR(
+          buffer.buf()->set_sticky_device(cache_entry->sticky_device));
+      flat_device_arrays.push_back(std::move(buffer));
     } else {
       static const auto* xla_module =
           new py::module(py::module::import("jax.interpreters.xla"));
       static const auto* device_array =
           new py::handle(xla_module->attr("_DeviceArray"));
-      flat_device_arrays.push_back((*device_array)(
-          cache_entry->out_avals[i],
-          py::cast(WrapWithClient(default_pyclient_, sticky_device)),
-          out_lazy_exprs[i], std::move(outputs[i])));
+      flat_device_arrays.push_back(
+          (*device_array)(cache_entry->out_avals[i],
+                          py::cast(WrapWithClient(default_pyclient_,
+                                                  cache_entry->sticky_device)),
+                          cache_entry->out_lazy_exprs[i], std::move(buffer)));
     }
   }
   py::object out = cache_entry->out_pytree_def.Unflatten(flat_device_arrays);
-  absl::optional<py::object> post_hook = PostHook();
+
+  // If there is a post-hook function, call it with the inputs and the outputs.
+  absl::optional<py::object> post_hook =
+      tls.post_hook.has_value() ? tls.post_hook : global_state.post_hook;
   if (post_hook) {
-    (*post_hook)(AsPyHandle(), py::cast<py::tuple>(args),
+    (*post_hook)(AsPyHandle(), args,
                  py::cast<py::dict>(kwargs.value_or(py::kwargs())), out);
   }
-  return out;
+  return std::move(out);
 }
 
 PyObject* JaxCompiledFunction_Type = nullptr;
@@ -814,14 +871,17 @@ PyObject* JaxCompiledFunction_tp_call(PyObject* self, PyObject* args,
   tensorflow::profiler::TraceMe traceme("JaxCompiledFunction::tp_call");
   JaxCompiledFunctionObject* o =
       reinterpret_cast<JaxCompiledFunctionObject*>(self);
-  py::args py_args = py::reinterpret_borrow<py::args>(args);
   absl::optional<py::kwargs> py_kwargs;
   if (kwargs) {
     py_kwargs = py::reinterpret_borrow<py::kwargs>(kwargs);
   }
-  xla::StatusOr<py::object> out;
   try {
-    out = o->fun.Call(std::move(py_args), std::move(py_kwargs));
+    xla::StatusOr<py::object> out = o->fun.Call(args, std::move(py_kwargs));
+    if (!out.ok()) {
+      PyErr_SetString(PyExc_ValueError, out.status().ToString().c_str());
+      return nullptr;
+    }
+    return out.ValueOrDie().release().ptr();
   } catch (py::error_already_set& e) {
     e.restore();
     return nullptr;
@@ -832,12 +892,6 @@ PyObject* JaxCompiledFunction_tp_call(PyObject* self, PyObject* args,
     PyErr_SetString(PyExc_ValueError, e.what());
     return nullptr;
   }
-
-  if (!out.ok()) {
-    PyErr_SetString(PyExc_ValueError, out.status().ToString().c_str());
-    return nullptr;
-  }
-  return out.ValueOrDie().release().ptr();
 }
 
 }  // extern "C"
@@ -845,15 +899,16 @@ PyObject* JaxCompiledFunction_tp_call(PyObject* self, PyObject* args,
 py::object MakeCompiledFunction(py::function fun, py::function cache_miss,
                                 py::function get_device,
                                 std::vector<int> static_argnums,
+                                std::vector<py::str> static_argnames,
                                 int cache_size) {
   py::object obj = py::reinterpret_steal<py::object>(JaxCompiledFunction_tp_new(
       reinterpret_cast<PyTypeObject*>(JaxCompiledFunction_Type), nullptr,
       nullptr));
   JaxCompiledFunctionObject* buf =
       reinterpret_cast<JaxCompiledFunctionObject*>(obj.ptr());
-  new (&buf->fun) CompiledFunction(std::move(fun), std::move(cache_miss),
-                                   std::move(get_device),
-                                   std::move(static_argnums), cache_size);
+  new (&buf->fun) CompiledFunction(
+      std::move(fun), std::move(cache_miss), std::move(get_device),
+      std::move(static_argnums), std::move(static_argnames), cache_size);
   return obj;
 }
 
@@ -976,13 +1031,16 @@ void BuildJaxjitSubmodule(py::module& m) {
   jitlib.def(
       "jit",
       [](py::function fun, py::function cache_miss, py::function get_device,
-         std::vector<int> static_argnums, int cache_size) -> py::object {
-        return MakeCompiledFunction(std::move(fun), std::move(cache_miss),
-                                    std::move(get_device),
-                                    std::move(static_argnums), cache_size);
+         std::vector<int> static_argnums, std::vector<py::str> static_argnames,
+         int cache_size) -> py::object {
+        return MakeCompiledFunction(
+            std::move(fun), std::move(cache_miss), std::move(get_device),
+            std::move(static_argnums), std::move(static_argnames), cache_size);
       },
       py::arg("fun"), py::arg("cache_miss"), py::arg("get_device"),
-      py::arg("static_argnums"), py::arg("cache_size") = 4096);
+      py::arg("static_argnums"),
+      py::arg("static_argnames") = std::vector<py::str>(),
+      py::arg("cache_size") = 4096);
 
   // This function is not yet a full replacement for the Python one, because:
   // (a) it does not support abstract types,
